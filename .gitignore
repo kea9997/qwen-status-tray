@@ -1,0 +1,17 @@
+*.exe
+*.dll
+*.log
+*.bak
+*.pfx
+*.p12
+*.key
+*.pem
+backend.txt
+settings.json
+ui-token.txt
+requests/
+jobs/
+token-tests/
+agent-conversations/
+chat-conversations/
+__pycache__/

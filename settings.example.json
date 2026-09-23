@@ -1,0 +1,8 @@
+{
+  "serverUrl": "http://127.0.0.1:18021/",
+  "queueUrl": "http://127.0.0.1:18022/queue",
+  "uiUrl": "http://127.0.0.1:18022/ui",
+  "gatewayDirectory": "../qwen-gateway",
+  "jobsDirectory": "../codex-local-worker/jobs",
+  "backendFile": "%LOCALAPPDATA%/QwenStatus/backend.txt"
+}
