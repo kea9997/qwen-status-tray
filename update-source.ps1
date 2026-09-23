@@ -32,7 +32,7 @@ if ($Mode -eq 'Rollback') {
 if ($LASTEXITCODE -ne 0) { throw 'GitHub 버전 확인에 실패했습니다.' }
 $revision = (& git -C $Repository rev-parse FETCH_HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or $revision -notmatch '^[0-9a-f]{40}$') { throw 'GitHub 버전을 확인하지 못했습니다.' }
-$current = if (Test-Path -LiteralPath $versionFile) { (Get-Content -LiteralPath $versionFile -Raw).Trim() } else { '설치 버전 미기록' }
+$current = if (Test-Path -LiteralPath $versionFile) { (Get-Content -LiteralPath $versionFile -Raw).Trim() } elseif ($Target -eq $Repository) { (& git -C $Repository rev-parse HEAD).Trim() } else { '설치 버전 미기록' }
 Write-Output ('설치: ' + $current)
 Write-Output ('GitHub: ' + $revision)
 if ($Mode -eq 'Check') { return }

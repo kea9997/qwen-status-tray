@@ -48,7 +48,13 @@ partial class QwenStatus {
    if(UsageLedger.Scan(requests,archive).Count!=2)throw new Exception("Archived duplicate counted twice");
    var sample=Path.Combine(root,"quality.json");File.WriteAllText(sample,"{\"profile\":\"quick\",\"status\":\"completed\",\"rows\":[{\"status\":\"completed\",\"warmup\":false,\"ttft_seconds\":1,\"decode_tok_s\":40,\"input_tokens\":50},{\"status\":\"completed\",\"quality_only\":true,\"recall_pass\":true,\"decode_tok_s\":5}]}");
    var bench=InsightsWindow.ReadBenchmark(sample);if(bench.Runs!=1||bench.RecallTotal!=1||bench.RecallPassed!=1||bench.MeanSpeed!=40)throw new Exception("Quality result filtering failed");
-   Directory.CreateDirectory(DataRoot);File.WriteAllText(Path.Combine(DataRoot,"operations-test.txt"),"PASS: archive totals, raw cleanup, duplicate protection, quality comparison data");
+   using(var app=new QwenStatus()){
+    var start=DateTime.UtcNow.AddSeconds(-2);app.RecordEnergy(new GpuReading{Watts=50,Temperature=55},100,1,start);
+    app.RecordEnergy(new GpuReading{Watts=50,Temperature=55},120,0,start.AddSeconds(2));
+    if(app.measuredTokens!=20||Math.Abs(app.measuredJoules-100)>.01||!app.EnergySummary().Contains("5.0 J/출력 토큰"))throw new Exception("GPU energy integration failed");
+    app.quitting=true;app.Close();
+   }
+   Directory.CreateDirectory(DataRoot);File.WriteAllText(Path.Combine(DataRoot,"operations-test.txt"),"PASS: archive totals, raw cleanup, duplicate protection, quality comparison data, GPU energy integration");
   }finally{Directory.Delete(root,true);}
  }
  void RestartSourceApp(){
