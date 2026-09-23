@@ -66,6 +66,7 @@ partial class QwenStatus {
   readonly TextBox diagnostics=new TextBox();
   readonly ListView benchmarks=new ListView(),sourceList=new ListView();
   readonly PictureBox cardPreview=new PictureBox();
+  readonly ComboBox cardFormat=new ComboBox();Button cardSave,cardCopyImage,cardCopyText;
   readonly List<BenchRecord> benchmarkRecords=new List<BenchRecord>();
   readonly string benchmarkIndex=Path.Combine(DataRoot,"benchmark-index.json");
   string timelinePath;
@@ -251,34 +252,81 @@ partial class QwenStatus {
 
   void BuildCard(){
    var page=Page("공유 카드");tabs.TabPages.Add(page);
-   var bar=new FlowLayoutPanel{Dock=DockStyle.Top,Height=43};page.Controls.Add(bar);
+   var bar=new FlowLayoutPanel{Dock=DockStyle.Top,Height=45,WrapContents=false};page.Controls.Add(bar);
+   cardFormat.DropDownStyle=ComboBoxStyle.DropDownList;cardFormat.Width=142;cardFormat.Height=34;cardFormat.Items.AddRange(new object[]{"가로형 16:9","정사각형 1:1"});cardFormat.SelectedIndex=0;cardFormat.SelectedIndexChanged+=(s,e)=>RefreshCard();bar.Controls.Add(cardFormat);
    var refresh=ActionButton("미리보기 갱신");refresh.Click+=(s,e)=>RefreshCard();bar.Controls.Add(refresh);
-   var save=ActionButton("PNG 저장");save.Click+=(s,e)=>SaveCard();bar.Controls.Add(save);
-   var hint=Hint("로컬 Qwen 처리량만 표시합니다. OpenAI 토큰 절약량이나 대화 원문은 포함하지 않습니다.");page.Controls.Add(hint);
+   cardSave=ActionButton("PNG 저장");cardSave.Click+=(s,e)=>SaveCard();bar.Controls.Add(cardSave);
+   cardCopyImage=ActionButton("이미지 복사");cardCopyImage.Click+=(s,e)=>CopyCardImage();bar.Controls.Add(cardCopyImage);
+   cardCopyText=ActionButton("게시글 문구 복사");cardCopyText.Click+=(s,e)=>CopyCardText();bar.Controls.Add(cardCopyText);
+   var hint=Hint("집계 토큰과 API 환산액만 공유합니다. 대화 원문·경로·계정 정보는 포함하지 않습니다. 실제 절약액은 아닙니다.");page.Controls.Add(hint);
    cardPreview.Dock=DockStyle.Fill;cardPreview.SizeMode=PictureBoxSizeMode.Zoom;cardPreview.BackColor=Color.FromArgb(223,230,241);page.Controls.Add(cardPreview);
    page.Controls.SetChildIndex(cardPreview,0);page.Controls.SetChildIndex(hint,1);page.Controls.SetChildIndex(bar,2);
+   FormClosed+=(s,e)=>{if(cardPreview.Image!=null)cardPreview.Image.Dispose();};
   }
-  void RefreshCard(){var image=RenderCard(owner==null?null:owner.usageLedger);var previous=cardPreview.Image;cardPreview.Image=image;if(previous!=null)previous.Dispose();}
+  UsageLedger CardLedger(){return owner==null?null:owner.usageLedger;}
+  bool CardReady(){var ledger=CardLedger();return ledger!=null&&ledger.Error==null;}
+  void RefreshCard(){var image=RenderCard(CardLedger(),cardFormat.SelectedIndex==1);var previous=cardPreview.Image;cardPreview.Image=image;if(previous!=null)previous.Dispose();bool ready=CardReady();cardSave.Enabled=cardCopyImage.Enabled=cardCopyText.Enabled=ready;}
   void SaveCard(){
-   using(var dialog=new SaveFileDialog{Filter="PNG 이미지|*.png",DefaultExt="png",FileName="qwen-local-usage-"+DateTime.Today.ToString("yyyyMMdd")+".png",InitialDirectory=Environment.GetFolderPath(Environment.SpecialFolder.MyPictures),OverwritePrompt=true}){
+   if(!CardReady())return;
+   using(var dialog=new SaveFileDialog{Filter="PNG 이미지|*.png",DefaultExt="png",FileName="qwen-local-ai-"+DateTime.Today.ToString("yyyyMMdd")+(cardFormat.SelectedIndex==1?"-square":"-wide")+".png",InitialDirectory=Environment.GetFolderPath(Environment.SpecialFolder.MyPictures),OverwritePrompt=true}){
     if(dialog.ShowDialog(this)!=DialogResult.OK)return;
-    using(var image=RenderCard(owner==null?null:owner.usageLedger))image.Save(dialog.FileName,System.Drawing.Imaging.ImageFormat.Png);
+    using(var image=RenderCard(CardLedger(),cardFormat.SelectedIndex==1))image.Save(dialog.FileName,System.Drawing.Imaging.ImageFormat.Png);
     MessageBox.Show("공유 카드를 저장했습니다.","Qwen");
    }
   }
-  public static Bitmap RenderCard(UsageLedger ledger){
-   var bitmap=new Bitmap(1200,675);using(var g=Graphics.FromImage(bitmap)){
-    g.SmoothingMode=SmoothingMode.AntiAlias;g.TextRenderingHint=System.Drawing.Text.TextRenderingHint.AntiAlias;
-    using(var background=new LinearGradientBrush(new Rectangle(0,0,1200,675),Color.FromArgb(13,28,55),Color.FromArgb(31,78,110),35f))g.FillRectangle(background,0,0,1200,675);
-    using(var titleFont=new Font("Malgun Gothic",34,FontStyle.Bold))using(var numberFont=new Font("Malgun Gothic",48,FontStyle.Bold))using(var smallFont=new Font("Malgun Gothic",18))using(var tinyFont=new Font("Malgun Gothic",14)){
-     g.DrawString("Qwen · 로컬 AI 기록",titleFont,Brushes.White,62,46);
-     g.DrawString(DateTime.Today.ToString("yyyy.MM.dd")+" 기준 · 공통 대기열 기록",tinyFont,Brushes.LightSkyBlue,65,125);
-     long total=ledger==null?0:ledger.Input+ledger.Output;g.DrawString(total.ToString("N0"),numberFont,Brushes.White,61,184);
-     g.DrawString("처리한 토큰",smallFont,Brushes.LightSkyBlue,67,278);
-     string[] captions={"입력","출력","요청","최고 생성 속도","최장 입력"};
-     string[] values={ledger==null?"—":ledger.Input.ToString("N0"),ledger==null?"—":ledger.Output.ToString("N0"),ledger==null?"—":ledger.Count.ToString("N0"),ledger==null||double.IsNaN(ledger.PeakSpeed())?"—":ledger.PeakSpeed().ToString("0.0")+" tok/s",ledger==null?"—":ledger.LongestInput().ToString("N0")+" 토큰"};
-     for(int i=0;i<5;i++){int x=i<3?65+i*360:65+(i-3)*540,y=i<3?369:475;g.DrawString(captions[i],tinyFont,Brushes.LightSkyBlue,x,y);g.DrawString(values[i],smallFont,Brushes.White,x,y+32);}
-     g.DrawString("로컬 모델 처리량입니다 · OpenAI 토큰 절약량이 아닙니다 · 테스트 요청 포함",tinyFont,Brushes.Gainsboro,65,616);
+  void CopyCardImage(){if(!CardReady())return;try{using(var image=RenderCard(CardLedger(),cardFormat.SelectedIndex==1))Clipboard.SetImage(image);MessageBox.Show("이미지를 클립보드에 복사했습니다.","Qwen");}catch(Exception ex){MessageBox.Show("이미지를 복사하지 못했습니다: "+ex.Message,"Qwen");}}
+  void CopyCardText(){if(!CardReady())return;try{Clipboard.SetText(CardCaption(CardLedger()));MessageBox.Show("게시글 문구를 클립보드에 복사했습니다.","Qwen");}catch(Exception ex){MessageBox.Show("문구를 복사하지 못했습니다: "+ex.Message,"Qwen");}}
+  static string CardMoney(decimal amount){return "$"+amount.ToString(amount>=1m?"0.00":amount>=0.01m?"0.0000":"0.000000",System.Globalization.CultureInfo.InvariantCulture);}
+  static string PriceBasis(){var p=ApiPricing.Current;string name=p.InputRate==0.50m&&p.OutputRate==3.00m?"Qwen3.8-27B 국제 API":"사용자 설정 API";return name+" · 입력 $"+p.InputRate.ToString("0.####",System.Globalization.CultureInfo.InvariantCulture)+" / 출력 $"+p.OutputRate.ToString("0.####",System.Globalization.CultureInfo.InvariantCulture)+" (100만 토큰)";}
+  internal static string CardCaption(UsageLedger ledger){
+   if(ledger==null||ledger.Error!=null)return "기록을 계산하는 중입니다.";
+   string money=CardMoney(ApiPricing.Current.TotalCost(ledger.Input,ledger.Output));
+   return string.Format("내 PC의 Qwen이 {0:N0}토큰을 처리했어요. 같은 토큰량을 유료 API 단가로 환산하면 약 {1}!\n입력 {2:N0} · 출력 {3:N0} · 요청 {4:N0}건\n여러분의 로컬 AI는 얼마나 일했나요?\n\ngithub.com/kea9997/qwen-status-tray\n#로컬AI #Qwen #셀프호스팅\n\n※ {5}. 기록된 요청의 비교치이며 실제 지출·절약액이나 전기·GPU 비용은 아닙니다. 테스트 요청 포함.",ledger.Input+ledger.Output,money,ledger.Input,ledger.Output,ledger.Count,PriceBasis());
+  }
+  static GraphicsPath RoundRect(RectangleF r,float radius){var path=new GraphicsPath();float d=radius*2;path.AddArc(r.X,r.Y,d,d,180,90);path.AddArc(r.Right-d,r.Y,d,d,270,90);path.AddArc(r.Right-d,r.Bottom-d,d,d,0,90);path.AddArc(r.X,r.Bottom-d,d,d,90,90);path.CloseFigure();return path;}
+  static void FillRound(Graphics g,Brush brush,RectangleF bounds,float radius){using(var path=RoundRect(bounds,radius))g.FillPath(brush,path);}
+  static void FitText(Graphics g,string value,float x,float y,float width,float size,float minimum,Color color){
+   using(var brush=new SolidBrush(color)){for(float current=size;current>=minimum;current-=2){using(var font=new Font("Malgun Gothic",current,FontStyle.Bold)){if(g.MeasureString(value,font).Width<=width||current-2<minimum){g.DrawString(value,font,brush,x,y);break;}}}}
+  }
+  static void CardLabel(Graphics g,string value,float x,float y,float size,Color color,bool bold=false){using(var font=new Font("Malgun Gothic",size,bold?FontStyle.Bold:FontStyle.Regular))using(var brush=new SolidBrush(color))g.DrawString(value,font,brush,x,y);}
+  static void DrawMetric(Graphics g,string label,string value,float x,float y,float width){CardLabel(g,label,x,y,15,Color.FromArgb(154,183,205));FitText(g,value,x,y+27,width,24,15,Color.White);}
+  public static Bitmap RenderCard(UsageLedger ledger,bool square=false){
+   int width=square?1080:1200,height=square?1080:675;var bitmap=new Bitmap(width,height);using(var g=Graphics.FromImage(bitmap)){
+    g.SmoothingMode=SmoothingMode.AntiAlias;g.TextRenderingHint=System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
+    using(var background=new LinearGradientBrush(new Rectangle(0,0,width,height),Color.FromArgb(8,18,34),Color.FromArgb(25,58,92),32f))g.FillRectangle(background,0,0,width,height);
+    using(var glow=new SolidBrush(Color.FromArgb(34,57,194,231)))g.FillEllipse(glow,width-390,-230,610,610);
+    using(var ring=new Pen(Color.FromArgb(42,129,209,232),2)){g.DrawEllipse(ring,width-340,-180,490,490);g.DrawEllipse(ring,width-265,-105,340,340);}
+    using(var chip=new SolidBrush(Color.FromArgb(28,98,173,220)))FillRound(g,chip,new RectangleF(54,42,240,42),20);
+    CardLabel(g,"QWEN  /  LOCAL AI",72,49,16,Color.FromArgb(117,224,239),true);
+    CardLabel(g,DateTime.Today.ToString("yyyy.MM.dd")+" 기준",square?815:950,53,15,Color.FromArgb(179,200,217));
+    CardLabel(g,"내 PC의 Qwen이 처리한 일",54,square?121:105,34,Color.White,true);
+    bool ready=ledger!=null&&ledger.Error==null;long input=ready?ledger.Input:0,output=ready?ledger.Output:0;
+    string cost=ready?CardMoney(ApiPricing.Current.TotalCost(input,output)):"집계 중";
+    CardLabel(g,"같은 토큰을 API로 처리했다면",58,square?210:178,19,Color.FromArgb(154,204,227));
+    FitText(g,cost,48,square?249:213,square?970:730,square?88:90,44,Color.FromArgb(112,235,222));
+    CardLabel(g,"API 비용 환산  ·  "+PriceBasis(),58,square?397:360,16,Color.FromArgb(188,206,222));
+    string total=ready?(input+output).ToString("N0"):"—",inText=ready?input.ToString("N0"):"—",outText=ready?output.ToString("N0"):"—",count=ready?ledger.Count.ToString("N0"):"—";
+    using(var panel=new SolidBrush(Color.FromArgb(37,156,194,226))){
+     if(square){
+      FillRound(g,panel,new RectangleF(54,441,972,154),24);DrawMetric(g,"총 처리 토큰",total,86,471,880);
+      FillRound(g,panel,new RectangleF(54,617,472,134),22);DrawMetric(g,"입력 토큰",inText,84,645,410);
+      FillRound(g,panel,new RectangleF(548,617,478,134),22);DrawMetric(g,"출력 토큰",outText,578,645,418);
+      FillRound(g,panel,new RectangleF(54,773,472,134),22);DrawMetric(g,"요청 횟수",count+"건",84,801,410);
+      FillRound(g,panel,new RectangleF(548,773,478,134),22);DrawMetric(g,"최고 생성 속도",ready&&!double.IsNaN(ledger.PeakSpeed())?ledger.PeakSpeed().ToString("0.0")+" tok/s":"—",578,801,418);
+     }else{
+      FillRound(g,panel,new RectangleF(54,395,1092,135),24);
+      DrawMetric(g,"총 처리 토큰",total,82,422,250);DrawMetric(g,"입력 토큰",inText,357,422,235);DrawMetric(g,"출력 토큰",outText,632,422,235);DrawMetric(g,"요청 횟수",count+"건",906,422,205);
+     }
+    }
+    if(square){
+     CardLabel(g,"당신의 로컬 AI는 얼마나 일했나요?",57,929,22,Color.White,true);
+     CardLabel(g,"github.com/kea9997/qwen-status-tray",57,970,17,Color.FromArgb(112,235,222));
+     CardLabel(g,"기록된 요청의 비교치 · 실제 절약액 아님 · 전기/장비 비용 제외 · 테스트 포함",57,1028,12,Color.FromArgb(183,200,215));
+    }else{
+     CardLabel(g,"최고 생성 속도  "+(ready&&!double.IsNaN(ledger.PeakSpeed())?ledger.PeakSpeed().ToString("0.0")+" tok/s":"—")+"    ·    최장 입력  "+(ready?ledger.LongestInput().ToString("N0")+" 토큰":"—"),59,551,17,Color.FromArgb(212,224,237));
+     CardLabel(g,"당신의 로컬 AI는 얼마나 일했나요?",58,589,21,Color.White,true);
+     CardLabel(g,"github.com/kea9997/qwen-status-tray",735,595,16,Color.FromArgb(112,235,222));
+     CardLabel(g,"기록된 요청의 비교치 · 실제 절약액 아님 · 전기/장비 비용 제외 · 테스트 요청 포함",58,643,12,Color.FromArgb(183,200,215));
     }
    }return bitmap;
   }
@@ -287,14 +335,19 @@ partial class QwenStatus {
  static void InsightsTest(){
   string directory=Path.Combine(Path.GetTempPath(),"qwen-insights-"+Guid.NewGuid());Directory.CreateDirectory(directory);
   try{
-   File.WriteAllText(Path.Combine(directory,Guid.NewGuid()+".json"),"{\"source\":\"direct-chat\",\"created_at\":\"2026-09-23T00:00:00+09:00\",\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":50},\"generation_seconds\":2}");
+   File.WriteAllText(Path.Combine(directory,Guid.NewGuid()+".json"),"{\"source\":\"direct-chat\",\"created_at\":\"2026-09-23T00:00:00+09:00\",\"input\":{\"task\":\"PRIVATE_CARD_TEST_MARKER\"},\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":50},\"generation_seconds\":2}");
    File.WriteAllText(Path.Combine(directory,Guid.NewGuid()+".json"),"{\"source\":\"token-test\",\"created_at\":\"2026-09-23T00:00:00+09:00\",\"usage\":{\"prompt_tokens\":200,\"completion_tokens\":20},\"generation_seconds\":1}");
    File.WriteAllText(Path.Combine(directory,Guid.NewGuid()+".json"),"{\"source\":\"hermes-agent\",\"created_at\":\"2026-09-23T00:00:00+09:00\",\"usage\":{\"prompt_tokens\":40,\"completion_tokens\":10},\"generation_seconds\":1}");
    var ledger=UsageLedger.Scan(directory);var rows=ledger.SourceStats();if(rows.Length!=3||ledger.Input!=340||ledger.Output!=80||ledger.LongestInput()!=200||ledger.PeakSpeed()!=25||SourceName("hermes-agent")!="Hermes 에이전트")throw new Exception("Source usage summary failed");
    string benchmark=Path.Combine(directory,"benchmark.json");File.WriteAllText(benchmark,"{\"profile\":\"quick\",\"status\":\"completed\",\"rows\":[{\"warmup\":true,\"status\":\"completed\",\"ttft_seconds\":2,\"input_tokens\":80},{\"warmup\":false,\"status\":\"completed\",\"ttft_seconds\":1,\"decode_tok_s\":40,\"input_tokens\":100}]}");
    var result=InsightsWindow.ReadBenchmark(benchmark);if(result.Runs!=1||result.WarmupTtft!=2||result.MeanTtft!=1||result.MeanSpeed!=40||result.MaxInput!=100)throw new Exception("Benchmark summary failed");
-   Directory.CreateDirectory(DataRoot);using(var card=InsightsWindow.RenderCard(ledger))card.Save(Path.Combine(DataRoot,"insights-card-preview.png"));
-   File.WriteAllText(Path.Combine(DataRoot,"insights-test.txt"),"PASS: source usage, benchmark summary, share card");
+   Directory.CreateDirectory(DataRoot);
+   using(var card=InsightsWindow.RenderCard(ledger)){if(card.Width!=1200||card.Height!=675)throw new Exception("Wide card dimensions failed");card.Save(Path.Combine(DataRoot,"insights-card-preview.png"));}
+   using(var card=InsightsWindow.RenderCard(ledger,true)){if(card.Width!=1080||card.Height!=1080)throw new Exception("Square card dimensions failed");card.Save(Path.Combine(DataRoot,"insights-card-square-preview.png"));}
+   string caption=InsightsWindow.CardCaption(ledger);if(!caption.Contains("420토큰")||!caption.Contains("github.com/kea9997/qwen-status-tray")||!caption.Contains("실제 지출·절약액")||caption.Contains("PRIVATE_CARD_TEST_MARKER"))throw new Exception("Share caption was incomplete or leaked source text");
+   string showcase=Path.Combine(directory,"showcase");Directory.CreateDirectory(showcase);File.WriteAllText(Path.Combine(showcase,Guid.NewGuid()+".json"),"{\"status\":\"completed\",\"usage\":{\"prompt_tokens\":31354013,\"completion_tokens\":1223579}}");
+   using(var card=InsightsWindow.RenderCard(UsageLedger.Scan(showcase)))card.Save(Path.Combine(DataRoot,"insights-card-large-preview.png"));
+   File.WriteAllText(Path.Combine(DataRoot,"insights-test.txt"),"PASS: source usage, benchmark summary, two private share cards and caption");
   }finally{Directory.Delete(directory,true);}
  }
  static void InsightsUiTest(){

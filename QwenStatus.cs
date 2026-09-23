@@ -126,7 +126,7 @@ partial class QwenStatus : Form {
    this.owner=owner;
    Text="Qwen 누적 사용량";ClientSize=new Size(720,505);MinimumSize=MaximumSize=new Size(736,544);Font=new Font("Malgun Gothic",10);BackColor=Color.FromArgb(245,247,250);
    Controls.Add(new Label{Text="Qwen 처리량",Bounds=new Rectangle(24,20,660,33),Font=new Font("Malgun Gothic",18,FontStyle.Bold)});
-   var priceButton=new Button{Text="API 단가 설정",Bounds=new Rectangle(548,22,148,34)};priceButton.Click+=(s,e)=>{using(var editor=new PriceSettingsWindow()){if(editor.ShowDialog(this)==DialogResult.OK){UpdateStats(ledger);if(owner!=null)owner.UpdateUsageText(owner.lastServerInput,owner.lastServerOutput);}}};Controls.Add(priceButton);
+   var priceButton=new Button{Text="API 단가 설정",Bounds=new Rectangle(548,22,148,34)};priceButton.Click+=(s,e)=>{using(var editor=new PriceSettingsWindow()){if(editor.ShowDialog(this)==DialogResult.OK){UpdateStats(ledger);if(owner!=null){owner.UpdateUsageText(owner.lastServerInput,owner.lastServerOutput);if(owner.insightsWindow!=null&&!owner.insightsWindow.IsDisposed)owner.insightsWindow.OnLedgerUpdated();}}}};Controls.Add(priceButton);
    total.Bounds=new Rectangle(24,66,660,52);total.Font=new Font("Malgun Gothic",25,FontStyle.Bold);total.ForeColor=Color.FromArgb(37,89,182);Controls.Add(total);
    detail.Bounds=new Rectangle(26,125,660,46);Controls.Add(detail);
    period.Bounds=new Rectangle(26,171,660,26);period.ForeColor=Color.DimGray;Controls.Add(period);
