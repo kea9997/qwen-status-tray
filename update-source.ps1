@@ -12,7 +12,7 @@ $Repository = (Resolve-Path -LiteralPath $Repository).Path
 if (-not (Test-Path -LiteralPath (Join-Path $Repository '.git'))) { throw 'GitHub 원본 저장소가 없습니다. QwenStatus-public 체크아웃을 확인하세요.' }
 $remote = (& git -C $Repository remote get-url origin).Trim()
 if ($LASTEXITCODE -ne 0 -or $remote -notmatch '^https://github\.com/kea9997/qwen-status-tray(?:\.git)?$') { throw '예상한 GitHub 원본이 아닙니다: ' + $remote }
-$files = @('QwenStatus.cs','TokenTestWindow.cs','QwenInsights.cs','QwenOperations.cs','QwenTelemetry.cs','QwenExperience.cs','QwenChatWindow.cs','QwenDelegation.cs','run-source.ps1','update-source.ps1','build.cmd','README.md','SUPPORT.md','settings.example.json')
+$files = @('QwenStatus.cs','TokenTestWindow.cs','QwenInsights.cs','QwenOperations.cs','QwenTelemetry.cs','QwenExperience.cs','QwenChatWindow.cs','QwenDelegation.cs','run-source.ps1','update-source.ps1','build.cmd','open-hermes.cmd','README.md','INSTALL.md','SUPPORT.md','settings.example.json')
 $backupRoot = Join-Path $env:LOCALAPPDATA 'QwenStatus\update-backups'
 $versionFile = Join-Path $Target 'source-version.txt'
 if ($Mode -eq 'Rollback') {
