@@ -30,11 +30,34 @@ partial class QwenStatus {
    if(File.Exists(oldFile)||File.Exists(Path.Combine(requests,oldId+".request.txt"))||after.Count!=2||after.Input!=130||after.Output!=30||after.SourceStats().Length!=2)throw new Exception("Archive totals or raw cleanup failed");
    File.WriteAllText(oldFile,"{\"status\":\"completed\",\"created_at\":\"2020-01-01T00:00:00+09:00\",\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":20}}");
    if(UsageLedger.Scan(requests,archive).Count!=2)throw new Exception("Archived duplicate counted twice");
+   ConcurrentArchiveTest(root);
    var sample=Path.Combine(root,"quality.json");File.WriteAllText(sample,"{\"profile\":\"quick\",\"status\":\"completed\",\"rows\":[{\"status\":\"completed\",\"warmup\":false,\"ttft_seconds\":1,\"decode_tok_s\":40,\"input_tokens\":50},{\"status\":\"completed\",\"quality_only\":true,\"recall_pass\":true,\"decode_tok_s\":5}]}");
    var bench=InsightsWindow.ReadBenchmark(sample);if(bench.Runs!=1||bench.RecallTotal!=1||bench.RecallPassed!=1||bench.MeanSpeed!=40)throw new Exception("Quality result filtering failed");
    TelemetryTest();
-   Directory.CreateDirectory(DataRoot);File.WriteAllText(Path.Combine(DataRoot,"operations-test.txt"),"PASS: archive totals, raw cleanup, duplicate protection, quality comparison data, GPU energy integration");
+   Directory.CreateDirectory(DataRoot);File.WriteAllText(Path.Combine(DataRoot,"operations-test.txt"),"PASS: archive totals, raw cleanup, duplicate protection, concurrent source archive and scan consistency, staging recovery, quality comparison data, GPU energy integration");
   }finally{Directory.Delete(root,true);}
+ }
+ static void ConcurrentArchiveTest(string root){
+  string directory=Path.Combine(root,"concurrent","requests"),archive=Path.Combine(root,"concurrent","archived-usage.json");Directory.CreateDirectory(directory);
+  const int perSource=24;long expectedInput=0,expectedOutput=0;string firstId=null;
+  foreach(string source in new[]{"direct-chat","token-test"})for(int i=0;i<perSource;i++){
+   string id=Guid.NewGuid().ToString();if(firstId==null)firstId=id;int input=100+i,output=20+i;expectedInput+=input;expectedOutput+=output;
+   File.WriteAllText(Path.Combine(directory,id+".json"),new JavaScriptSerializer().Serialize(new{status="completed",created_at="2020-01-01T00:00:00+09:00",source=source,usage=new{prompt_tokens=input,completion_tokens=output}}));
+   File.WriteAllText(Path.Combine(directory,id+".request.txt"),"test prompt");
+  }
+  using(var ready=new System.Threading.CountdownEvent(3))using(var start=new System.Threading.ManualResetEventSlim(false)){
+   var first=Task.Factory.StartNew(()=>{ready.Signal();start.Wait();return UsageLedger.ArchiveRecords(directory,archive,DateTime.Today.AddDays(-30),"direct-chat");},TaskCreationOptions.LongRunning);
+   var second=Task.Factory.StartNew(()=>{ready.Signal();start.Wait();return UsageLedger.ArchiveRecords(directory,archive,DateTime.Today.AddDays(-30),"token-test");},TaskCreationOptions.LongRunning);
+   var scan=Task.Factory.StartNew(()=>{ready.Signal();start.Wait();for(int i=0;i<8;i++){var snapshot=UsageLedger.Scan(directory,archive);if(snapshot.Error!=null||snapshot.Count!=perSource*2||snapshot.Input!=expectedInput||snapshot.Output!=expectedOutput)throw new Exception("Concurrent archive scan lost totals");}},TaskCreationOptions.LongRunning);
+   ready.Wait();start.Set();Task.WaitAll(first,second,scan);
+   if(first.Result!=perSource||second.Result!=perSource)throw new Exception("Concurrent archive source counts failed");
+  }
+  var totals=UsageLedger.Scan(directory,archive);var saved=new JavaScriptSerializer().Deserialize<List<UsageLedger.ArchivedRow>>(File.ReadAllText(archive));
+  if(totals.Error!=null||totals.Count!=perSource*2||totals.Input!=expectedInput||totals.Output!=expectedOutput||totals.SourceStats().Length!=2||saved.Count!=perSource*2||saved.Select(x=>x.Id).Distinct(StringComparer.OrdinalIgnoreCase).Count()!=perSource*2||Directory.GetFiles(directory).Length!=0)throw new Exception("Concurrent archive totals or cleanup failed");
+  string staging=Path.Combine(root,"concurrent","record-staging","interrupted");Directory.CreateDirectory(staging);
+  string pendingId=Guid.NewGuid().ToString();File.WriteAllText(Path.Combine(staging,pendingId+".json"),"{\"status\":\"queued\"}");File.WriteAllText(Path.Combine(staging,firstId+".request.txt"),"committed test prompt");
+  var recovered=UsageLedger.Scan(directory,archive);
+  if(recovered.Error!=null||recovered.Input!=expectedInput||recovered.Output!=expectedOutput||!File.Exists(Path.Combine(directory,pendingId+".json"))||File.Exists(Path.Combine(directory,firstId+".request.txt"))||Directory.Exists(staging)||Directory.GetFiles(Path.GetDirectoryName(archive),"*.tmp").Length!=0)throw new Exception("Archive staging recovery failed");
  }
  void RestartSourceApp(){
   string script=Path.Combine(Root,"run-source.ps1");if(!File.Exists(script)){MessageBox.Show("소스 실행 스크립트를 찾지 못했습니다.","Qwen");return;}
@@ -46,10 +69,13 @@ partial class QwenStatus {
   }catch(Exception ex){MessageBox.Show("상태 앱 재시작 실패: "+ex.Message,"Qwen");}
  }
  partial class UsageLedger {
+  // Recovery must not inspect staging while another archive transaction is moving files.
+  static readonly object ArchiveGate=new object();
   public class ArchivedRow {public string Id {get;set;}public long Input {get;set;}public long Output {get;set;}public string Day {get;set;}public string Source {get;set;}public double Speed {get;set;}}
   readonly HashSet<string> archivedIds=new HashSet<string>(StringComparer.OrdinalIgnoreCase);
   void LoadArchive(string archivePath,string requestsDirectory){
    if(string.IsNullOrEmpty(archivePath))return;
+   lock(ArchiveGate){
    var rows=File.Exists(archivePath)?new JavaScriptSerializer{MaxJsonLength=int.MaxValue}.Deserialize<List<ArchivedRow>>(File.ReadAllText(archivePath)):new List<ArchivedRow>();
    RecoverStaging(Path.GetDirectoryName(archivePath),requestsDirectory,(rows??new List<ArchivedRow>()).Where(x=>x!=null).Select(x=>x.Id));
    foreach(var row in rows??new List<ArchivedRow>()){
@@ -58,6 +84,7 @@ partial class QwenStatus {
     entries["archive:"+row.Id]=entry;Input+=row.Input;Output+=row.Output;
     long old;daily.TryGetValue(entry.Day,out old);daily[entry.Day]=old+row.Input+row.Output;
     if(entry.Day<FirstDay)FirstDay=entry.Day;
+   }
    }
   }
   static void RecoverStaging(string archiveDirectory,string requestsDirectory,IEnumerable<string> archived){
@@ -94,22 +121,25 @@ partial class QwenStatus {
    return rows;
   }
   public static ArchivePreview PreviewArchive(string directory,string archivePath,DateTime cutoff,string source){
-   var rows=Candidates(directory,archivePath,cutoff,source);return new ArchivePreview{Count=rows.Count,Input=rows.Sum(x=>x.Input),Output=rows.Sum(x=>x.Output)};
+   lock(ArchiveGate){var rows=Candidates(directory,archivePath,cutoff,source);return new ArchivePreview{Count=rows.Count,Input=rows.Sum(x=>x.Input),Output=rows.Sum(x=>x.Output)};}
   }
   public static int ArchiveRecords(string directory,string archivePath,DateTime cutoff,string source){
+   lock(ArchiveGate){
    var rows=Candidates(directory,archivePath,cutoff,source);if(rows.Count==0)return 0;
    string stage=Path.Combine(Path.GetDirectoryName(archivePath),"record-staging",Guid.NewGuid().ToString("N"));Directory.CreateDirectory(stage);
+   string temp=archivePath+"."+Guid.NewGuid().ToString("N")+".tmp";
    bool committed=false;
    try{
     foreach(var row in rows){foreach(var file in Directory.GetFiles(directory,row.Id+".*")){string target=Path.Combine(stage,Path.GetFileName(file));File.Move(file,target);}}
     var all=File.Exists(archivePath)?new JavaScriptSerializer{MaxJsonLength=int.MaxValue}.Deserialize<List<ArchivedRow>>(File.ReadAllText(archivePath)):new List<ArchivedRow>();
-    all.AddRange(rows);string temp=archivePath+".tmp";File.WriteAllText(temp,new JavaScriptSerializer{MaxJsonLength=int.MaxValue}.Serialize(all));
+    if(all==null)all=new List<ArchivedRow>();all.AddRange(rows);File.WriteAllText(temp,new JavaScriptSerializer{MaxJsonLength=int.MaxValue}.Serialize(all));
     if(File.Exists(archivePath))File.Replace(temp,archivePath,null);else File.Move(temp,archivePath);committed=true;
     Directory.Delete(stage,true);return rows.Count;
    }catch{
     if(!committed)foreach(var file in Directory.GetFiles(stage)){string target=Path.Combine(directory,Path.GetFileName(file));if(!File.Exists(target))File.Move(file,target);}
     throw;
-   }finally{if(Directory.Exists(stage)&&!Directory.EnumerateFileSystemEntries(stage).Any())Directory.Delete(stage);}
+   }finally{if(File.Exists(temp))File.Delete(temp);if(Directory.Exists(stage)&&!Directory.EnumerateFileSystemEntries(stage).Any())Directory.Delete(stage);}
+   }
   }
  }
 
@@ -117,7 +147,8 @@ partial class QwenStatus {
   readonly ListView queueList=new ListView(),energyList=new ListView();readonly Label queueNote=new Label(),archiveNote=new Label(),updateNote=new Label(),energyNote=new Label(),regressionNote=new Label();
   readonly ComboBox retention=new ComboBox(),archiveSource=new ComboBox();
   readonly System.Windows.Forms.Timer queueTimer=new System.Windows.Forms.Timer();
-  bool queueLoading;
+  FlowLayoutPanel archiveBar;
+  bool queueLoading,archiveCleaning,archiveSourcesRefreshing;int archivePreviewVersion;
   void BuildOperations(){BuildQueue();BuildArchive();BuildEnergy();BuildUpdates();AddRegressionControl();}
   void BuildQueue(){
    var page=Page("대기열");tabs.TabPages.Add(page);
@@ -160,29 +191,42 @@ partial class QwenStatus {
   }
   void BuildArchive(){
    var page=Page("기록 정리");tabs.TabPages.Add(page);
-   var bar=new FlowLayoutPanel{Dock=DockStyle.Top,Height=42};page.Controls.Add(bar);
+   var bar=new FlowLayoutPanel{Dock=DockStyle.Top,Height=42};archiveBar=bar;page.Controls.Add(bar);
    retention.DropDownStyle=ComboBoxStyle.DropDownList;retention.Width=130;retention.Items.AddRange(new object[]{"7일 이전","30일 이전","90일 이전"});retention.SelectedIndex=1;bar.Controls.Add(retention);
    archiveSource.DropDownStyle=ComboBoxStyle.DropDownList;archiveSource.Width=180;archiveSource.Items.Add("전체 출처");archiveSource.SelectedIndex=0;bar.Controls.Add(archiveSource);
    var preview=ActionButton("정리 대상 확인");preview.Click+=(s,e)=>PreviewArchiveUi();bar.Controls.Add(preview);
    var clean=ActionButton("원문 기록 삭제");clean.Click+=(s,e)=>ArchiveUi();bar.Controls.Add(clean);
    archiveNote.Dock=DockStyle.Fill;archiveNote.Font=new Font("Malgun Gothic",11);archiveNote.Padding=new Padding(10,22,10,10);archiveNote.Text="완료된 요청 중 선택 기간보다 오래된 원문 기록을 정리합니다.\n토큰·날짜·출처만 집계 파일에 남겨 누적 통계는 유지합니다.\n진행 중인 요청과 대화 세션은 삭제하지 않습니다.";page.Controls.Add(archiveNote);
+   retention.SelectedIndexChanged+=(s,e)=>ArchiveSelectionChanged();archiveSource.SelectedIndexChanged+=(s,e)=>ArchiveSelectionChanged();
    page.Controls.SetChildIndex(archiveNote,0);page.Controls.SetChildIndex(bar,1);
   }
   DateTime ArchiveCutoff(){return DateTime.Today.AddDays(retention.SelectedIndex==0?-7:retention.SelectedIndex==2?-90:-30);}
   string ArchiveSource(){return archiveSource.SelectedIndex<=0?null:archiveSource.SelectedItem.ToString();}
-  void RefreshArchiveSources(){string selected=archiveSource.SelectedItem as string;archiveSource.Items.Clear();archiveSource.Items.Add("전체 출처");if(owner!=null&&owner.usageLedger!=null)foreach(var stat in owner.usageLedger.SourceStats())archiveSource.Items.Add(stat.Name);archiveSource.SelectedItem=selected!=null&&archiveSource.Items.Contains(selected)?selected:"전체 출처";}
+  void ArchiveSelectionChanged(){if(archiveSourcesRefreshing||archiveCleaning)return;archivePreviewVersion++;archiveNote.Text="정리 조건이 바뀌었습니다. 정리 대상 확인을 눌러주세요.";}
+  void RefreshArchiveSources(){
+   if(archiveCleaning)return;string selected=archiveSource.SelectedItem as string;archiveSourcesRefreshing=true;
+   try{archiveSource.Items.Clear();archiveSource.Items.Add("전체 출처");if(owner!=null&&owner.usageLedger!=null)foreach(var stat in owner.usageLedger.SourceStats())archiveSource.Items.Add(stat.Name);archiveSource.SelectedItem=selected!=null&&archiveSource.Items.Contains(selected)?selected:"전체 출처";}
+   finally{archiveSourcesRefreshing=false;}
+   if(selected!=(archiveSource.SelectedItem as string))ArchiveSelectionChanged();
+  }
   async void PreviewArchiveUi(){
-   DateTime cutoff=ArchiveCutoff();string source=ArchiveSource();archiveNote.Text="정리 대상을 계산하는 중…";
-   try{var result=await Task.Run(()=>UsageLedger.PreviewArchive(SharedRequests,ArchiveFile,cutoff,source));if(!IsDisposed)archiveNote.Text=string.Format("{0:yyyy-MM-dd} 이전 · {1}\n정리 대상 {2:N0}건 · 입력 {3:N0} / 출력 {4:N0} 토큰\n원문 파일은 삭제되지만 이 수치와 날짜·출처는 누적 통계에 남습니다.",cutoff,source??"전체 출처",result.Count,result.Input,result.Output);}catch(Exception ex){archiveNote.Text="정리 대상을 확인하지 못했습니다: "+ex.Message;}
+   if(archiveCleaning)return;int version=++archivePreviewVersion;DateTime cutoff=ArchiveCutoff();string source=ArchiveSource();archiveNote.Text="정리 대상을 계산하는 중…";
+   try{var result=await Task.Run(()=>UsageLedger.PreviewArchive(SharedRequests,ArchiveFile,cutoff,source));if(!IsDisposed&&version==archivePreviewVersion)archiveNote.Text=string.Format("{0:yyyy-MM-dd} 이전 · {1}\n정리 대상 {2:N0}건 · 입력 {3:N0} / 출력 {4:N0} 토큰\n원문 파일은 삭제되지만 이 수치와 날짜·출처는 누적 통계에 남습니다.",cutoff,source??"전체 출처",result.Count,result.Input,result.Output);}catch(Exception ex){if(!IsDisposed&&version==archivePreviewVersion)archiveNote.Text="정리 대상을 확인하지 못했습니다: "+ex.Message;}
   }
   async void ArchiveUi(){
-   DateTime cutoff=ArchiveCutoff();string source=ArchiveSource();UsageLedger.ArchivePreview preview;
-   try{preview=await Task.Run(()=>UsageLedger.PreviewArchive(SharedRequests,ArchiveFile,cutoff,source));}catch(Exception ex){MessageBox.Show(ex.Message,"기록 확인 실패");return;}
-   if(preview.Count==0){archiveNote.Text="정리 대상이 없습니다.";return;}
-   if(MessageBox.Show(string.Format("{0:N0}건의 입력·출력 원문 파일을 삭제합니다.\n누적 토큰 집계는 유지됩니다. 계속할까요?",preview.Count),"원문 기록 삭제",MessageBoxButtons.YesNo,MessageBoxIcon.Warning)!=DialogResult.Yes)return;
-   archiveNote.Text="기록을 안전하게 정리하는 중…";
-   try{int count=await Task.Run(()=>UsageLedger.ArchiveRecords(SharedRequests,ArchiveFile,cutoff,source));if(IsDisposed)return;owner.usageScan=Task.Run(()=>UsageLedger.Scan(SharedRequests));archiveNote.Text=count.ToString("N0")+"건의 원문 기록을 삭제했습니다. 누적 통계를 다시 계산합니다.";}
-   catch(Exception ex){archiveNote.Text="기록 정리 실패: "+ex.Message;}
+   if(archiveCleaning)return;archiveCleaning=true;archivePreviewVersion++;archiveBar.Enabled=false;
+   DateTime cutoff=ArchiveCutoff();string source=ArchiveSource();
+   try{
+    archiveNote.Text="정리 대상을 계산하는 중…";UsageLedger.ArchivePreview preview;
+    try{preview=await Task.Run(()=>UsageLedger.PreviewArchive(SharedRequests,ArchiveFile,cutoff,source));}catch(Exception ex){if(!IsDisposed)archiveNote.Text="정리 대상을 확인하지 못했습니다: "+ex.Message;return;}
+    if(IsDisposed)return;
+    if(preview.Count==0){archiveNote.Text="정리 대상이 없습니다.";return;}
+    if(MessageBox.Show(this,string.Format("{0:N0}건의 입력·출력 원문 파일을 삭제합니다.\n누적 토큰 집계는 유지됩니다. 계속할까요?",preview.Count),"원문 기록 삭제",MessageBoxButtons.YesNo,MessageBoxIcon.Warning)!=DialogResult.Yes){archiveNote.Text="기록 정리를 취소했습니다.";return;}
+    archiveNote.Text="기록을 안전하게 정리하는 중…";
+    int count=await Task.Run(()=>UsageLedger.ArchiveRecords(SharedRequests,ArchiveFile,cutoff,source));if(IsDisposed)return;
+    if(owner!=null&&!owner.IsDisposed)owner.usageScan=Task.Run(()=>UsageLedger.Scan(SharedRequests));archiveNote.Text=count.ToString("N0")+"건의 원문 기록을 삭제했습니다. 누적 통계를 다시 계산합니다.";
+   }catch(Exception ex){if(!IsDisposed)archiveNote.Text="기록 정리 실패: "+ex.Message;}
+   finally{archiveCleaning=false;if(!IsDisposed)archiveBar.Enabled=true;}
   }
   void BuildEnergy(){
    var page=Page("노트북 효율");tabs.TabPages.Add(page);

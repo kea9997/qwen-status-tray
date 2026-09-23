@@ -48,7 +48,7 @@ partial class QwenStatus : Form {
  double lastServerInput=double.NaN,lastServerOutput=double.NaN;
  Task<GpuReading> gpuTask; DateTime lastGpuPoll=DateTime.MinValue; string gpuText="GPU 정보 확인 중…";
  readonly object jobLock=new object(); string latestJobPath; DateTime latestJobCreated=DateTime.MinValue;
- FileSystemWatcher[] jobWatchers; Task<string> initialJobScan;
+ JobWatcher[] jobWatchers; Task<string> initialJobScan; bool jobRescanRequested,usageRescanRequested;
  readonly ConcurrentQueue<string> dirtyUsage=new ConcurrentQueue<string>(); Task<UsageLedger> usageScan; UsageLedger usageLedger; UsageWindow usageWindow;
  sealed class ApiPricing {
   internal const string SourceUrl="https://www.alibabacloud.com/help/en/model-studio/qwen3-8-27b";
@@ -108,7 +108,7 @@ partial class QwenStatus : Form {
     if(day<FirstDay)FirstDay=day;
    }catch(Exception){unreadable.Add(path);}
   }
-  public static UsageLedger Scan(string directory,string archivePath=null){var result=new UsageLedger();try{if(archivePath==null&&string.Equals(Path.GetFullPath(directory),Path.GetFullPath(SharedRequests),StringComparison.OrdinalIgnoreCase))archivePath=ArchiveFile;result.LoadArchive(archivePath,directory);if(Directory.Exists(directory))foreach(var file in Directory.EnumerateFiles(directory,"*.json"))result.AddFile(file);}catch(Exception ex){result.Error=ex.Message;}return result;}
+  public static UsageLedger Scan(string directory,string archivePath=null){lock(ArchiveGate){var result=new UsageLedger();try{if(archivePath==null&&string.Equals(Path.GetFullPath(directory),Path.GetFullPath(SharedRequests),StringComparison.OrdinalIgnoreCase))archivePath=ArchiveFile;result.LoadArchive(archivePath,directory);if(Directory.Exists(directory))foreach(var file in Directory.EnumerateFiles(directory,"*.json"))result.AddFile(file);}catch(Exception ex){result.Error=ex.Message;}return result;}}
   public SourceStat[] SourceStats(){
    var groups=new Dictionary<string,SourceStat>(StringComparer.OrdinalIgnoreCase);DateTime today=DateTime.Today,week=today.AddDays(-6);
    foreach(var entry in entries.Values){string key=string.IsNullOrWhiteSpace(entry.Source)?"출처 미확인":entry.Source;SourceStat row;
@@ -273,13 +273,39 @@ partial class QwenStatus : Form {
  }
  static string Field(Dictionary<string,object> data,string key){object value;return data.TryGetValue(key,out value)&&value!=null?value.ToString():"";}
  static string ReadBounded(string path){using(var reader=new StreamReader(path)){char[] buffer=new char[100000];int n=reader.ReadBlock(buffer,0,buffer.Length);return new string(buffer,0,n)+(reader.Peek()>=0?"\r\n[표시 한도 초과: 원본 파일에서 확인]":"");}}
- FileSystemWatcher WatchJobs(string directory){
-  if(!Directory.Exists(directory))return null;
-  var watcher=new FileSystemWatcher(directory,"*.json"){NotifyFilter=NotifyFilters.FileName|NotifyFilters.LastWrite};
-  watcher.Created+=(s,e)=>JobChanged(e.FullPath);watcher.Changed+=(s,e)=>JobChanged(e.FullPath);
-  watcher.Renamed+=(s,e)=>JobChanged(e.FullPath);
-  watcher.Error+=(s,e)=>{initialJobScan=Task.Run(()=>LatestJob(Jobs));};
-  watcher.EnableRaisingEvents=true;return watcher;
+ sealed class JobWatcher : IDisposable {
+  internal readonly string DirectoryPath; readonly Action<string> changed;
+  FileSystemWatcher watcher; DateTime nextCheck=DateTime.MinValue; int repairRequested=1; bool disposed;
+  internal JobWatcher(string directory,Action<string> changed){DirectoryPath=directory;this.changed=changed;}
+  internal void RequestRepair(){Interlocked.Exchange(ref repairRequested,1);}
+  internal bool Refresh(DateTime now){
+   if(disposed||now<nextCheck)return false;nextCheck=now.AddSeconds(15);
+   if(!Directory.Exists(DirectoryPath)){Release();RequestRepair();return false;}
+   if(watcher!=null&&Interlocked.CompareExchange(ref repairRequested,0,0)==0)return false;
+   Release();Interlocked.Exchange(ref repairRequested,0);
+   try{
+    watcher=new FileSystemWatcher(DirectoryPath,"*.json"){NotifyFilter=NotifyFilters.FileName|NotifyFilters.LastWrite};
+    watcher.Created+=(s,e)=>changed(e.FullPath);watcher.Changed+=(s,e)=>changed(e.FullPath);watcher.Renamed+=(s,e)=>changed(e.FullPath);
+    watcher.Error+=(s,e)=>RequestRepair();watcher.EnableRaisingEvents=true;return true;
+   }catch(IOException){Release();RequestRepair();}catch(UnauthorizedAccessException){Release();RequestRepair();}catch(ArgumentException){Release();RequestRepair();}
+   return false;
+  }
+  void Release(){var previous=watcher;watcher=null;if(previous!=null)previous.Dispose();}
+  public void Dispose(){disposed=true;Release();}
+ }
+ JobWatcher WatchJobs(string directory){var watcher=new JobWatcher(directory,JobChanged);watcher.Refresh(DateTime.UtcNow);return watcher;}
+ void CollectLatestJobScan(){
+  var scan=initialJobScan;if(scan==null||!scan.IsCompleted)return;
+  initialJobScan=null;if(scan.Status!=TaskStatus.RanToCompletion)return;
+  lock(jobLock)if(latestJobPath!=null&&!File.Exists(latestJobPath)){latestJobPath=null;latestJobCreated=DateTime.MinValue;}
+  if(scan.Result!=null)ConsiderLatest(scan.Result);
+ }
+ void RecoverJobWatchers(DateTime now){
+  if(jobWatchers!=null)foreach(var watcher in jobWatchers)if(watcher!=null&&watcher.Refresh(now)){
+   jobRescanRequested=true;if(string.Equals(watcher.DirectoryPath,SharedRequests,StringComparison.OrdinalIgnoreCase))usageRescanRequested=true;
+  }
+  CollectLatestJobScan();
+  if(jobRescanRequested&&initialJobScan==null){jobRescanRequested=false;initialJobScan=Task.Run(()=>LatestJob(Jobs));}
  }
  void JobChanged(string path){ConsiderLatest(path);if(Path.GetDirectoryName(path).Equals(SharedRequests,StringComparison.OrdinalIgnoreCase)){dirtyUsage.Enqueue(path);energyChanged.Enqueue(path);}}
  void ConsiderLatest(string path){
@@ -288,7 +314,7 @@ partial class QwenStatus : Form {
  }
  void RefreshJobs(){
   try {
-   var scan=initialJobScan;if(scan!=null&&scan.IsCompleted){initialJobScan=null;if(scan.Status==TaskStatus.RanToCompletion&&scan.Result!=null)ConsiderLatest(scan.Result);}
+   CollectLatestJobScan();
    string path;lock(jobLock)path=latestJobPath;
    if(path==null){ClearLive();return;}
    var selected=history.SelectedItem as JobItem;
@@ -347,7 +373,8 @@ partial class QwenStatus : Form {
    return new GpuReading{Text=string.Format("GPU 전체 {0}% · VRAM {1:0.0}/{2:0.0} GiB ({3:0}%) · {4}°C{5}",values[3].Trim(),used/1024,total/1024,used/total*100,values[2].Trim(),double.IsNaN(watts)?"":" · "+watts.ToString("0")+"W"),Watts=watts,Temperature=double.Parse(values[2],System.Globalization.CultureInfo.InvariantCulture)};
   }}catch{return new GpuReading{Text="GPU 정보 사용 불가"};}
  }
- static string Get(string suffix){var req=(HttpWebRequest)WebRequest.Create(ServerUrl+suffix);req.Timeout=1000;req.ReadWriteTimeout=1000;using(var res=req.GetResponse())using(var reader=new StreamReader(res.GetResponseStream()))return reader.ReadToEnd();}
+ static string GetUrl(string url,int timeout=1000){var req=(HttpWebRequest)WebRequest.Create(url);req.Timeout=timeout;req.ReadWriteTimeout=timeout;using(var res=req.GetResponse())using(var reader=new StreamReader(res.GetResponseStream()))return reader.ReadToEnd();}
+ static string Get(string suffix){return GetUrl(ServerUrl+suffix);}
  static string Backend(){try{return File.ReadAllText(BackendFile).Trim()=="ninfer"?"ninfer":"vLLM";}catch{return "vLLM";}}
  void ChooseBackend(string name){
   try{Get("health");MessageBox.Show("현재 서버를 먼저 종료한 뒤 모델을 선택하세요.","Qwen");return;}catch{}
@@ -379,7 +406,7 @@ partial class QwenStatus : Form {
   usage.Text+="\n이번 서버 "+(double.IsNaN(serverInput)||double.IsNaN(serverOutput)?"—":string.Format("{0:N0} 토큰",serverInput+serverOutput));
  }
  async Task Poll(){if(polling)return;polling=true;try{
-  double[] data=await Task.Run(()=>{try{Get("health");try{string m=Get("metrics");double running=Metric(m,"num_requests_running"),waiting=Metric(m,"num_requests_waiting");try{using(var wc=new WebClient()){var q=new JavaScriptSerializer().Deserialize<Dictionary<string,object>>(wc.DownloadString(QueueUrl));running=Math.Max(running,Convert.ToDouble(q["running"]));waiting+=Convert.ToDouble(q["waiting"]);}}catch{}return new[]{1.0,running,waiting,Metric(m,"prompt_tokens_total"),Metric(m,"generation_tokens_total")};}catch{return new[]{1.0,double.NaN,double.NaN,double.NaN,double.NaN};}}catch{return new[]{0.0,0.0,0.0,double.NaN,double.NaN};}});
+  double[] data=await Task.Run(()=>{try{Get("health");try{string m=Get("metrics");double running=Metric(m,"num_requests_running"),waiting=Metric(m,"num_requests_waiting");try{var q=new JavaScriptSerializer().Deserialize<Dictionary<string,object>>(GetUrl(QueueUrl));running=Math.Max(running,Convert.ToDouble(q["running"]));waiting+=Convert.ToDouble(q["waiting"]);}catch{}return new[]{1.0,running,waiting,Metric(m,"prompt_tokens_total"),Metric(m,"generation_tokens_total")};}catch{return new[]{1.0,double.NaN,double.NaN,double.NaN,double.NaN};}}catch{return new[]{0.0,0.0,0.0,double.NaN,double.NaN};}});
   bool live=data[0]==1;bool loading=requested!=DateTime.MinValue&&(DateTime.UtcNow-requested).TotalMinutes<10;
   if(server!=null&&server.HasExited&&!live)loading=false;if(live)requested=DateTime.MinValue;
   double speed=double.NaN;DateTime now=DateTime.UtcNow;if(live&&!double.IsNaN(data[4])){if(previousTokens>=0&&data[4]>=previousTokens)speed=(data[4]-previousTokens)/(now-previousTime).TotalSeconds;previousTokens=data[4];previousTime=now;}else previousTokens=-1;
@@ -387,9 +414,12 @@ partial class QwenStatus : Form {
   if(gpuTask!=null&&gpuTask.IsCompleted){if(gpuTask.Status==TaskStatus.RanToCompletion){gpuText=gpuTask.Result.Text;lastGpuReading=gpuTask.Result;ObserveGpuHeat(lastGpuReading);}else gpuText="GPU 정보 사용 불가";gpuTask=null;}
   powerBusy=!double.IsNaN(data[1])&&data[1]>0;
   ProcessEnergyRequests();
+  RecoverJobWatchers(now);
   bool ledgerChanged=false;
   if(usageScan!=null&&usageScan.IsCompleted){if(usageScan.Status==TaskStatus.RanToCompletion){usageLedger=usageScan.Result;ledgerChanged=true;}usageScan=null;}
-  if(usageLedger!=null){string path;int n=0;while(n++<100&&dirtyUsage.TryDequeue(out path)){usageLedger.AddFile(path);ledgerChanged=true;}if(usageWindow!=null&&!usageWindow.IsDisposed&&usageWindow.Visible)usageWindow.UpdateStats(usageLedger);}
+  if(usageRescanRequested&&usageScan==null){usageRescanRequested=false;usageScan=Task.Run(()=>UsageLedger.Scan(SharedRequests));}
+  // Apply queued changes to the new snapshot, not to the ledger it will replace.
+  if(usageLedger!=null&&usageScan==null){string path;int n=0;while(n++<100&&dirtyUsage.TryDequeue(out path)){usageLedger.AddFile(path);ledgerChanged=true;}if(usageWindow!=null&&!usageWindow.IsDisposed&&usageWindow.Visible)usageWindow.UpdateStats(usageLedger);}
   if(ledgerChanged&&insightsWindow!=null&&!insightsWindow.IsDisposed&&insightsWindow.Visible)insightsWindow.OnLedgerUpdated();
   int status=Classify(live,loading,data[1],data[2]);Display(status,data[3],data[4],speed,data[1],data[2]);CheckImportantEvents(status);
   if(Visible)RefreshJobs();
@@ -401,6 +431,28 @@ partial class QwenStatus : Form {
   if(!exists){string script=Path.Combine(Root,"start.sh");if(!File.Exists(script))throw new Exception("서버 시작 스크립트가 설정되지 않았습니다.");server=Run(WslPath(script));requested=DateTime.UtcNow;}
  }catch(Exception ex){MessageBox.Show(ex.Message,"Qwen");}finally{action=false;}await Poll();}
  async Task StopServer(){if(action)return;action=true;suppressOfflineUntil=DateTime.UtcNow.AddMinutes(2);start.Enabled=stop.Enabled=false;note.Text="서버 종료 중…";try{string script=Path.Combine(Root,"stop.sh");if(!File.Exists(script))throw new Exception("서버 종료 스크립트가 설정되지 않았습니다.");using(var p=Run(WslPath(script))){bool ended=await Task.Run(()=>p.WaitForExit(45000));if(!ended||p.ExitCode!=0)throw new Exception("서버 종료를 확인하지 못했습니다.");}requested=DateTime.MinValue;}catch(Exception ex){MessageBox.Show(ex.Message,"Qwen");}finally{action=false;}await Poll();}
+ static void HistoryRecoveryTest(string root){
+  string directory=Path.Combine(root,"late-requests");var changes=new ConcurrentQueue<string>();DateTime now=DateTime.UtcNow;
+  using(var watcher=new JobWatcher(directory,path=>changes.Enqueue(path))){
+   if(watcher.Refresh(now))throw new Exception("Missing request directory was watched");
+   Directory.CreateDirectory(directory);string existing=Path.Combine(directory,Guid.NewGuid()+".json");
+   File.WriteAllText(existing,"{\"status\":\"completed\",\"usage\":{\"prompt_tokens\":25,\"completion_tokens\":5}}");
+   if(watcher.Refresh(now.AddSeconds(1)))throw new Exception("Watcher retry was not throttled");
+   if(!watcher.Refresh(now.AddSeconds(16))||LatestJob(directory)!=existing||UsageLedger.Scan(directory).Input!=25)throw new Exception("Late request directory recovery failed");
+   string next=Path.Combine(directory,Guid.NewGuid()+".json");File.WriteAllText(next,"{\"status\":\"queued\"}");
+   if(!SpinWait.SpinUntil(()=>changes.Contains(next),2000))throw new Exception("Recovered watcher missed a request");
+   watcher.RequestRepair();
+   if(!watcher.Refresh(now.AddSeconds(32))||watcher.Refresh(now.AddSeconds(48)))throw new Exception("Watcher error recovery or duplicate scan prevention failed");
+  }
+ }
+ static void QueueTimeoutTest(){
+  var listener=new System.Net.Sockets.TcpListener(IPAddress.Loopback,0);listener.Start();
+  try{
+   string url="http://127.0.0.1:"+((IPEndPoint)listener.LocalEndpoint).Port+"/queue";var elapsed=Stopwatch.StartNew();bool timedOut=false;
+   try{GetUrl(url,200);}catch(WebException ex){timedOut=ex.Status==WebExceptionStatus.Timeout;}
+   if(!timedOut||elapsed.ElapsedMilliseconds>5000)throw new Exception("Unresponsive queue did not time out promptly");
+  }finally{listener.Stop();}
+ }
  static void CoreTest(){
   if(Classify(false,false,0,0)!=0||Classify(false,true,0,0)!=1||Classify(true,false,0,0)!=2||Classify(true,false,1,0)!=3||Classify(true,false,double.NaN,0)!=4)throw new Exception("State classification failed");
   if(Metric("vllm:generation_tokens_total{engine=\"0\"} 12\nvllm:generation_tokens_total{engine=\"1\"} 8","generation_tokens_total")!=20)throw new Exception("Metric aggregation failed");
@@ -417,6 +469,7 @@ partial class QwenStatus : Form {
    string priceFile=Path.Combine(directory,"api-price.json");var customPrice=new ApiPricing{InputRate=0.25m,OutputRate=2.50m};customPrice.Save(priceFile);
    var loadedPrice=ApiPricing.Load(priceFile);if(loadedPrice.TotalCost(2000000,1000000)!=3.00m)throw new Exception("Custom API pricing was not persisted");
    File.WriteAllText(priceFile,"{\"inputPerMillionUsd\":-1,\"outputPerMillionUsd\":3}");if(ApiPricing.Load(priceFile).InputRate!=0.50m)throw new Exception("Invalid API pricing was accepted");
+   HistoryRecoveryTest(directory);QueueTimeoutTest();
   }finally{Directory.Delete(directory,true);}
  }
  [STAThread] static void Main(string[] args){
