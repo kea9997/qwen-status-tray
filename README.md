@@ -12,6 +12,8 @@
 
 Windows의 .NET Framework 4 C# 컴파일러를 사용합니다. `build.cmd`를 실행하면 같은 폴더에 `QwenStatus.new.exe`가 만들어집니다. 빌드 스크립트는 서버를 시작하거나 중지하지 않습니다.
 
+개인 PC에서는 Windows PowerShell 5.1로 소스를 메모리에서 컴파일해 실행할 수도 있습니다. 같은 폴더의 `run-source.ps1`을 `powershell.exe -NoProfile -STA -ExecutionPolicy RemoteSigned -File .\run-source.ps1`로 실행하면 새 QwenStatus EXE를 만들지 않습니다. `RemoteSigned`는 이 프로세스에만 적용되며 Smart App Control이나 Defender 설정을 바꾸지 않습니다. 앱은 스크립트 폴더의 설정·보조 파일을 사용합니다. 이 방식도 PC의 스크립트 실행 정책에 따라 차단될 수 있으므로 일반 배포용 설치 방법은 아닙니다.
+
 생성된 EXE는 **코드 서명이 없습니다.** 조직의 App Control 또는 Windows Smart App Control 환경에서는 실행이 차단될 수 있습니다. GitHub에서 내려받았다는 사실만으로 실행 파일에 신뢰 서명이 붙지는 않습니다. 보안 정책을 해제해 실행하는 방법은 권장하지 않습니다.
 
 ## 설정

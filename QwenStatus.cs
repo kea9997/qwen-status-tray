@@ -17,7 +17,11 @@ using System.Web.Script.Serialization;
 class QwenStatus : Form {
  [DllImport("user32.dll")] static extern bool DestroyIcon(IntPtr h);
  [DllImport("shell32.dll",CharSet=CharSet.Unicode)] static extern int SetCurrentProcessExplicitAppUserModelID(string id);
- static readonly string Root=AppDomain.CurrentDomain.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar);
+ static readonly string Root=SourceRoot();
+ static string SourceRoot(){
+  string directory=AppDomain.CurrentDomain.GetData("QwenStatusRoot") as string;
+  return Path.GetFullPath(string.IsNullOrWhiteSpace(directory)?AppDomain.CurrentDomain.BaseDirectory:directory).TrimEnd(Path.DirectorySeparatorChar);
+ }
  static readonly string DataRoot=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"QwenStatus");
  static readonly Dictionary<string,object> Settings=LoadSettings();
  internal static readonly string GatewayRoot=SettingPath("gatewayDirectory",Path.Combine(Root,"..","qwen-gateway"));
@@ -360,6 +364,7 @@ class QwenStatus : Form {
    string directory=Path.Combine(Path.GetTempPath(),"qwen-status-"+Guid.NewGuid().ToString());Directory.CreateDirectory(directory);
    string fixture=Path.Combine(directory,Guid.NewGuid().ToString()+".json");
    try{using(var app=new QwenStatus()){
+    app.hideContentBox.Checked=false;
     app.history.Items.Add(new JobItem{Path=fixture,Title="status fixture"});app.history.SelectedIndex=0;
     File.WriteAllText(fixture,"{\"status\":\"queued\",\"source\":\"direct-chat\",\"created_at\":\"2026-09-23T00:00:00Z\"}");app.ShowJob();
     if(!app.jobInfo.Text.Contains("공통 대기열")||!app.jobInfo.Text.Contains("직접 대화"))throw new Exception("Queued phase failed");
