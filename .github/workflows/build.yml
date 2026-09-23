@@ -28,3 +28,7 @@ jobs:
           if ($process.ExitCode -ne 0) { throw "Operations test exited with $($process.ExitCode)" }
           $result = Get-Content -LiteralPath (Join-Path $env:LOCALAPPDATA 'QwenStatus\operations-test.txt') -Raw
           if (-not $result.StartsWith('PASS:')) { throw "Operations test result: $result" }
+          $process = Start-Process -FilePath .\QwenStatus.new.exe -ArgumentList '--experience-test' -WindowStyle Hidden -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Experience test exited with $($process.ExitCode)" }
+          $result = Get-Content -LiteralPath (Join-Path $env:LOCALAPPDATA 'QwenStatus\experience-test.txt') -Raw
+          if (-not $result.StartsWith('PASS:')) { throw "Experience test result: $result" }

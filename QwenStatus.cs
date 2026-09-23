@@ -177,6 +177,8 @@ partial class QwenStatus : Form {
   menu.Items.Add("최근 작업 내역",null,(s,e)=>OpenActivity());
   menu.Items.Add("토큰 테스트",null,(s,e)=>OpenTokenTest());
   menu.Items.Add("분석 센터",null,(s,e)=>OpenInsights());menu.Items.Add("작은 상태창",null,(s,e)=>ToggleMini());
+  menu.Items.Add("연결 설정",null,(s,e)=>OpenSetup());
+  var alertsMenu=new ToolStripMenuItem("중요 알림"){Checked=notifyEnabled,CheckOnClick=true};alertsMenu.CheckedChanged+=(s,e)=>SetNotifyPreference(alertsMenu.Checked);menu.Items.Add(alertsMenu);
   menu.Items.Add("다음 시작: ninfer 240K",null,(s,e)=>ChooseBackend("ninfer"));
   menu.Items.Add("다음 시작: vLLM 64K",null,(s,e)=>ChooseBackend("vllm"));
   menu.Items.Add("서버 켜기",null,async(s,e)=>await StartServer());menu.Items.Add("서버 끄기",null,async(s,e)=>await StopServer());
@@ -184,11 +186,12 @@ partial class QwenStatus : Form {
   tray.ContextMenuStrip=menu;tray.Icon=icons[4];tray.Text="Qwen 상태";tray.Visible=true;tray.MouseClick+=(s,e)=>{if(e.Button==MouseButtons.Left)Restore();};
   FormClosing+=(s,e)=>{if(!quitting&&e.CloseReason==CloseReason.UserClosing){e.Cancel=true;Hide();}};
   Resize+=(s,e)=>{if(WindowState==FormWindowState.Minimized)Hide();};
-  FormClosed+=(s,e)=>{timer.Stop();if(jobWatchers!=null)foreach(var watcher in jobWatchers)if(watcher!=null)watcher.Dispose();if(usageWindow!=null&&!usageWindow.IsDisposed)usageWindow.Close();if(activityWindow!=null&&!activityWindow.IsDisposed)activityWindow.Close();if(insightsWindow!=null&&!insightsWindow.IsDisposed)insightsWindow.Close();if(miniWindow!=null&&!miniWindow.IsDisposed)miniWindow.Shutdown();if(tokenWindow!=null)tokenWindow.Shutdown();tray.Dispose();foreach(var icon in icons)icon.Dispose();};
+  FormClosed+=(s,e)=>{timer.Stop();StopPowerMonitor();if(jobWatchers!=null)foreach(var watcher in jobWatchers)if(watcher!=null)watcher.Dispose();if(usageWindow!=null&&!usageWindow.IsDisposed)usageWindow.Close();if(activityWindow!=null&&!activityWindow.IsDisposed)activityWindow.Close();if(insightsWindow!=null&&!insightsWindow.IsDisposed)insightsWindow.Close();if(setupWindow!=null&&!setupWindow.IsDisposed)setupWindow.Close();if(miniWindow!=null&&!miniWindow.IsDisposed)miniWindow.Shutdown();if(tokenWindow!=null)tokenWindow.Shutdown();tray.Dispose();foreach(var icon in icons)icon.Dispose();};
   Directory.CreateDirectory(DataRoot);
   jobWatchers=new[]{WatchJobs(Jobs),WatchJobs(SharedRequests)};
   initialJobScan=Task.Run(()=>LatestJob(Jobs));
   usageScan=Task.Run(()=>UsageLedger.Scan(SharedRequests));
+  StartPowerMonitor();
   timer.Interval=2000;timer.Tick+=async(s,e)=>await Poll();timer.Start();
  }
  void OpenTokenTest(){if(tokenWindow==null||tokenWindow.IsDisposed)tokenWindow=new TokenTestWindow();tokenWindow.Show();tokenWindow.WindowState=FormWindowState.Normal;tokenWindow.Activate();}
@@ -226,7 +229,7 @@ partial class QwenStatus : Form {
   watcher.Error+=(s,e)=>{initialJobScan=Task.Run(()=>LatestJob(Jobs));};
   watcher.EnableRaisingEvents=true;return watcher;
  }
- void JobChanged(string path){ConsiderLatest(path);if(Path.GetDirectoryName(path).Equals(SharedRequests,StringComparison.OrdinalIgnoreCase))dirtyUsage.Enqueue(path);}
+ void JobChanged(string path){ConsiderLatest(path);if(Path.GetDirectoryName(path).Equals(SharedRequests,StringComparison.OrdinalIgnoreCase)){dirtyUsage.Enqueue(path);energyChanged.Enqueue(path);}}
  void ConsiderLatest(string path){
   if(!Regex.IsMatch(Path.GetFileName(path),@"^[a-fA-F0-9-]{36}\.json$"))return;
   try{DateTime created=File.GetCreationTimeUtc(path);lock(jobLock){if(created>=latestJobCreated){latestJobCreated=created;latestJobPath=path;}}}catch{}
@@ -328,12 +331,14 @@ partial class QwenStatus : Form {
   if(server!=null&&server.HasExited&&!live)loading=false;if(live)requested=DateTime.MinValue;
   double speed=double.NaN;DateTime now=DateTime.UtcNow;if(live&&!double.IsNaN(data[4])){if(previousTokens>=0&&data[4]>=previousTokens)speed=(data[4]-previousTokens)/(now-previousTime).TotalSeconds;previousTokens=data[4];previousTime=now;}else previousTokens=-1;
   if(gpuTask==null&&(now-lastGpuPoll).TotalSeconds>=(data[1]>0?2:10)){lastGpuPoll=now;gpuTask=Task.Run(()=>GpuStatus());}
-  if(gpuTask!=null&&gpuTask.IsCompleted){if(gpuTask.Status==TaskStatus.RanToCompletion){gpuText=gpuTask.Result.Text;RecordEnergy(gpuTask.Result,data[4],data[1],now);}else gpuText="GPU 정보 사용 불가";gpuTask=null;}
+  if(gpuTask!=null&&gpuTask.IsCompleted){if(gpuTask.Status==TaskStatus.RanToCompletion){gpuText=gpuTask.Result.Text;lastGpuReading=gpuTask.Result;ObserveGpuHeat(lastGpuReading);}else gpuText="GPU 정보 사용 불가";gpuTask=null;}
+  powerBusy=!double.IsNaN(data[1])&&data[1]>0;
+  ProcessEnergyRequests();
   bool ledgerChanged=false;
   if(usageScan!=null&&usageScan.IsCompleted){if(usageScan.Status==TaskStatus.RanToCompletion){usageLedger=usageScan.Result;ledgerChanged=true;}usageScan=null;}
   if(usageLedger!=null){string path;int n=0;while(n++<100&&dirtyUsage.TryDequeue(out path)){usageLedger.AddFile(path);ledgerChanged=true;}if(usageWindow!=null&&!usageWindow.IsDisposed&&usageWindow.Visible)usageWindow.UpdateStats(usageLedger);}
   if(ledgerChanged&&insightsWindow!=null&&!insightsWindow.IsDisposed&&insightsWindow.Visible)insightsWindow.OnLedgerUpdated();
-  Display(Classify(live,loading,data[1],data[2]),data[3],data[4],speed,data[1],data[2]);
+  int status=Classify(live,loading,data[1],data[2]);Display(status,data[3],data[4],speed,data[1],data[2]);CheckImportantEvents(status);
   if(Visible)RefreshJobs();
  }catch(Exception ex){note.Text=ex.Message;}finally{polling=false;}}
  static string WslPath(string path){if(path.Length<3||path[1]!=':'||path[2]!='\\')throw new Exception("WSL에서 사용할 Windows 드라이브 경로가 아닙니다.");return "/mnt/"+char.ToLowerInvariant(path[0])+path.Substring(2).Replace('\\','/');}
@@ -342,7 +347,7 @@ partial class QwenStatus : Form {
   bool exists=await Task.Run(()=>{try{Get("health");return true;}catch{return false;}});
   if(!exists){string script=Path.Combine(Root,"start.sh");if(!File.Exists(script))throw new Exception("서버 시작 스크립트가 설정되지 않았습니다.");server=Run(WslPath(script));requested=DateTime.UtcNow;}
  }catch(Exception ex){MessageBox.Show(ex.Message,"Qwen");}finally{action=false;}await Poll();}
- async Task StopServer(){if(action)return;action=true;start.Enabled=stop.Enabled=false;note.Text="서버 종료 중…";try{string script=Path.Combine(Root,"stop.sh");if(!File.Exists(script))throw new Exception("서버 종료 스크립트가 설정되지 않았습니다.");using(var p=Run(WslPath(script))){bool ended=await Task.Run(()=>p.WaitForExit(45000));if(!ended||p.ExitCode!=0)throw new Exception("서버 종료를 확인하지 못했습니다.");}requested=DateTime.MinValue;}catch(Exception ex){MessageBox.Show(ex.Message,"Qwen");}finally{action=false;}await Poll();}
+ async Task StopServer(){if(action)return;action=true;suppressOfflineUntil=DateTime.UtcNow.AddMinutes(2);start.Enabled=stop.Enabled=false;note.Text="서버 종료 중…";try{string script=Path.Combine(Root,"stop.sh");if(!File.Exists(script))throw new Exception("서버 종료 스크립트가 설정되지 않았습니다.");using(var p=Run(WslPath(script))){bool ended=await Task.Run(()=>p.WaitForExit(45000));if(!ended||p.ExitCode!=0)throw new Exception("서버 종료를 확인하지 못했습니다.");}requested=DateTime.MinValue;}catch(Exception ex){MessageBox.Show(ex.Message,"Qwen");}finally{action=false;}await Poll();}
  static void CoreTest(){
   if(Classify(false,false,0,0)!=0||Classify(false,true,0,0)!=1||Classify(true,false,0,0)!=2||Classify(true,false,1,0)!=3||Classify(true,false,double.NaN,0)!=4)throw new Exception("State classification failed");
   if(Metric("vllm:generation_tokens_total{engine=\"0\"} 12\nvllm:generation_tokens_total{engine=\"1\"} 8","generation_tokens_total")!=20)throw new Exception("Metric aggregation failed");
@@ -363,6 +368,7 @@ partial class QwenStatus : Form {
   if(args.Length>0&&args[0]=="--core-test"){try{CoreTest();File.WriteAllText(Path.Combine(DataRoot,"core-test-result.txt"),"PASS");}catch(Exception ex){File.WriteAllText(Path.Combine(DataRoot,"core-test-result.txt"),"FAIL: "+ex);Environment.ExitCode=1;}return;}
   if(args.Length>0&&args[0]=="--insights-test"){InsightsTest();return;}
   if(args.Length>0&&args[0]=="--operations-test"){OperationsTest();return;}
+  if(args.Length>0&&args[0]=="--experience-test"){ExperienceTest();return;}
   if(args.Length>0&&args[0]=="--insights-ui-test"){InsightsUiTest();return;}
   if(args.Length>0&&args[0]=="--token-test-ui"){TokenTestWindow.Test();return;}
   if(args.Length>0&&args[0]=="--usage-scan"){
@@ -420,6 +426,7 @@ partial class QwenStatus : Form {
    using(var app=new QwenStatus())using(var showTimer=new System.Windows.Forms.Timer()){
     // Keep a real window handle on the UI thread even during tray-only startup.
     IntPtr handle=app.Handle; UiLog("window handle ready");
+    if(!File.Exists(Path.Combine(DataRoot,"settings.json"))&&!File.Exists(Path.Combine(DataRoot,"first-run-seen.txt"))){File.WriteAllText(Path.Combine(DataRoot,"first-run-seen.txt"),DateTime.UtcNow.ToString("o"));app.BeginInvoke((Action)(()=>app.OpenSetup()));}
     var context=new ApplicationContext();app.FormClosed+=(s,e)=>context.ExitThread();
     showTimer.Interval=200;showTimer.Tick+=(s,e)=>{if(showRequest.WaitOne(0))app.Restore();};showTimer.Start();
     if(args.Contains("--show"))app.Restore();

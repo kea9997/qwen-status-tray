@@ -72,9 +72,9 @@ partial class QwenStatus {
   public InsightsWindow(QwenStatus app){
    owner=app;Text="Qwen 분석 센터";ClientSize=new Size(920,650);MinimumSize=new Size(760,560);Font=new Font("Malgun Gothic",9);BackColor=Color.FromArgb(245,247,250);
    tabs.Dock=DockStyle.Fill;tabs.Padding=new Point(16,8);Controls.Add(tabs);
-   BuildTimeline();BuildDiagnostics();BuildBenchmarks();BuildSources();BuildCard();BuildOperations();
+   BuildTimeline();BuildDiagnostics();BuildBenchmarks();BuildSources();BuildCard();BuildOperations();BuildTrends();
    LoadBenchmarks();ReloadTimeline();RefreshUsage();
-   tabs.SelectedIndexChanged+=(s,e)=>{if(tabs.SelectedIndex==1)ReloadDiagnostics();if(tabs.SelectedIndex==3)RefreshUsage();if(tabs.SelectedIndex==4)RefreshCard();if(tabs.SelectedIndex==5)ReloadQueue();if(tabs.SelectedIndex==6)RefreshArchiveSources();if(tabs.SelectedIndex==7)RefreshEnergy();};
+   tabs.SelectedIndexChanged+=(s,e)=>{if(tabs.SelectedIndex==1)ReloadDiagnostics();if(tabs.SelectedIndex==3)RefreshUsage();if(tabs.SelectedIndex==4)RefreshCard();if(tabs.SelectedIndex==5)ReloadQueue();if(tabs.SelectedIndex==6)RefreshArchiveSources();if(tabs.SelectedIndex==7)RefreshEnergy();if(tabs.SelectedIndex==9)ReloadTrends();};
   }
   static TabPage Page(string title){return new TabPage(title){BackColor=Color.FromArgb(245,247,250),Padding=new Padding(16)};}
   static Button ActionButton(string title){return new Button{Text=title,AutoSize=true,Height=34,Margin=new Padding(0,0,10,0)};}
@@ -129,7 +129,8 @@ partial class QwenStatus {
   void BuildDiagnostics(){
    var page=Page("연결 진단");tabs.TabPages.Add(page);page.Controls.Add(diagnostics);
    diagnostics.Dock=DockStyle.Fill;diagnostics.Multiline=true;diagnostics.ReadOnly=true;diagnostics.WordWrap=true;diagnostics.ScrollBars=ScrollBars.Vertical;diagnostics.Font=new Font("Consolas",11);diagnostics.BackColor=Color.White;
-   var refresh=ActionButton("다시 확인");refresh.Dock=DockStyle.Top;refresh.Click+=(s,e)=>ReloadDiagnostics();page.Controls.Add(refresh);
+  var refresh=ActionButton("다시 확인");refresh.Dock=DockStyle.Top;refresh.Click+=(s,e)=>ReloadDiagnostics();page.Controls.Add(refresh);
+   var setup=ActionButton("연결 설정 안내");setup.Dock=DockStyle.Top;setup.Click+=(s,e)=>{if(owner!=null)owner.OpenSetup();};page.Controls.Add(setup);
   }
   async void ReloadDiagnostics(){
    diagnostics.Text="서버와 공통 대기열을 확인하는 중…";
@@ -303,10 +304,11 @@ partial class QwenStatus {
   using(var app=new QwenStatus()){
    app.usageLedger=UsageLedger.Scan(fixtureDir);
    app.OpenInsights();Application.DoEvents();
-   if(app.insightsWindow==null||app.insightsWindow.tabs.TabPages.Count!=9)throw new Exception("Analysis tabs not created");
+   if(app.insightsWindow==null||app.insightsWindow.tabs.TabPages.Count!=10)throw new Exception("Analysis tabs not created");
    using(var image=new Bitmap(app.insightsWindow.Width,app.insightsWindow.Height)){app.insightsWindow.DrawToBitmap(image,new Rectangle(0,0,image.Width,image.Height));image.Save(Path.Combine(DataRoot,"insights-ui-preview.png"));}
-   foreach(int tab in new[]{1,2,3,4,5,6,7,8}){
+   foreach(int tab in new[]{1,2,3,4,5,6,7,8,9}){
     app.insightsWindow.tabs.SelectedIndex=tab;Application.DoEvents();
+    if(tab==9)for(int i=0;i<80&&app.insightsWindow.trendLoading;i++){System.Threading.Thread.Sleep(100);Application.DoEvents();}
     using(var image=new Bitmap(app.insightsWindow.Width,app.insightsWindow.Height)){app.insightsWindow.DrawToBitmap(image,new Rectangle(0,0,image.Width,image.Height));image.Save(Path.Combine(DataRoot,"insights-tab-"+tab+".png"));}
    }
    app.ToggleMini();app.UpdateMini(3,42,1,2);Application.DoEvents();
@@ -314,6 +316,6 @@ partial class QwenStatus {
    using(var image=new Bitmap(app.miniWindow.Width,app.miniWindow.Height)){app.miniWindow.DrawToBitmap(image,new Rectangle(0,0,image.Width,image.Height));image.Save(Path.Combine(DataRoot,"mini-preview.png"));}
    app.quitting=true;app.Close();
   }}finally{Directory.Delete(fixtureDir,true);}
-  File.WriteAllText(Path.Combine(DataRoot,"insights-ui-test.txt"),"PASS: nine tabs, mini panel, window rendering");
+  File.WriteAllText(Path.Combine(DataRoot,"insights-ui-test.txt"),"PASS: ten tabs, mini panel, window rendering");
  }
 }

@@ -10,7 +10,9 @@ try {
         (Join-Path $sourceRoot 'QwenStatus.cs'),
         (Join-Path $sourceRoot 'TokenTestWindow.cs'),
         (Join-Path $sourceRoot 'QwenInsights.cs'),
-        (Join-Path $sourceRoot 'QwenOperations.cs')
+        (Join-Path $sourceRoot 'QwenOperations.cs'),
+        (Join-Path $sourceRoot 'QwenTelemetry.cs'),
+        (Join-Path $sourceRoot 'QwenExperience.cs')
     ) -ReferencedAssemblies @(
         'System.Windows.Forms', 'System.Drawing', 'System.Web.Extensions'
     ) -PassThru -WarningAction SilentlyContinue

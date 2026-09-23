@@ -13,23 +13,7 @@ using System.Text;
 partial class QwenStatus {
  static readonly string ArchiveFile=Path.Combine(DataRoot,"archived-usage.json");
  class GpuReading {public string Text;public double Watts=double.NaN,Temperature=double.NaN;}
- double measuredJoules,measuredTokens,lastEnergyTokens=double.NaN,lastEnergyWatts=double.NaN;
- DateTime lastEnergyAt=DateTime.MinValue;bool lastEnergyRunning;
  GpuReading lastGpuReading;
- void RecordEnergy(GpuReading reading,double generationTotal,double running,DateTime now){
-  if(lastEnergyAt!=DateTime.MinValue&&lastEnergyRunning&&!double.IsNaN(reading.Watts)&&!double.IsNaN(lastEnergyWatts)&&!double.IsNaN(generationTotal)&&!double.IsNaN(lastEnergyTokens)&&generationTotal>=lastEnergyTokens){
-   double seconds=(now-lastEnergyAt).TotalSeconds;if(seconds>0&&seconds<15){measuredJoules+=(reading.Watts+lastEnergyWatts)/2*seconds;measuredTokens+=generationTotal-lastEnergyTokens;}
-  }
-  lastGpuReading=reading;lastEnergyAt=now;lastEnergyWatts=reading.Watts;lastEnergyTokens=generationTotal;lastEnergyRunning=!double.IsNaN(running)&&running>0;
-  if(insightsWindow!=null&&!insightsWindow.IsDisposed&&insightsWindow.Visible&&insightsWindow.tabs.SelectedIndex==7)insightsWindow.RefreshEnergy();
- }
- string EnergySummary(){
-  string supply=SystemInformation.PowerStatus.PowerLineStatus==PowerLineStatus.Online?"전원 연결":SystemInformation.PowerStatus.PowerLineStatus==PowerLineStatus.Offline?"배터리 사용":"전원 상태 확인 불가";
-  string current=lastGpuReading==null||double.IsNaN(lastGpuReading.Watts)?"전력 센서 사용 불가":lastGpuReading.Watts.ToString("0.0")+" W";
-  string temperature=lastGpuReading==null||double.IsNaN(lastGpuReading.Temperature)?"—":lastGpuReading.Temperature.ToString("0")+"°C";
-  string efficiency=measuredTokens>0&&measuredJoules>0?(measuredJoules/measuredTokens).ToString("0.0")+" J/출력 토큰":"측정 대기";
-  return "현재 상태: "+supply+"\nGPU 전력: "+current+"\nGPU 온도: "+temperature+"\n\n앱 실행 중 추정 GPU 효율: "+efficiency+"\n측정 출력 "+measuredTokens.ToString("N0")+" 토큰 · GPU 에너지 "+(measuredJoules/3600).ToString("0.000")+" Wh\n\nGPU 전력 샘플과 서버 출력 토큰 증가량으로 추정합니다. 화면·CPU·충전 손실은 포함하지 않습니다. 센서나 서버 메트릭이 없으면 측정할 수 없습니다.";
- }
  static void OperationsTest(){
   string root=Path.Combine(Path.GetTempPath(),"qwen-operations-"+Guid.NewGuid().ToString("N"));
   string requests=Path.Combine(root,"requests"),archive=Path.Combine(root,"archived-usage.json");Directory.CreateDirectory(requests);
@@ -48,12 +32,7 @@ partial class QwenStatus {
    if(UsageLedger.Scan(requests,archive).Count!=2)throw new Exception("Archived duplicate counted twice");
    var sample=Path.Combine(root,"quality.json");File.WriteAllText(sample,"{\"profile\":\"quick\",\"status\":\"completed\",\"rows\":[{\"status\":\"completed\",\"warmup\":false,\"ttft_seconds\":1,\"decode_tok_s\":40,\"input_tokens\":50},{\"status\":\"completed\",\"quality_only\":true,\"recall_pass\":true,\"decode_tok_s\":5}]}");
    var bench=InsightsWindow.ReadBenchmark(sample);if(bench.Runs!=1||bench.RecallTotal!=1||bench.RecallPassed!=1||bench.MeanSpeed!=40)throw new Exception("Quality result filtering failed");
-   using(var app=new QwenStatus()){
-    var start=DateTime.UtcNow.AddSeconds(-2);app.RecordEnergy(new GpuReading{Watts=50,Temperature=55},100,1,start);
-    app.RecordEnergy(new GpuReading{Watts=50,Temperature=55},120,0,start.AddSeconds(2));
-    if(app.measuredTokens!=20||Math.Abs(app.measuredJoules-100)>.01||!app.EnergySummary().Contains("5.0 J/출력 토큰"))throw new Exception("GPU energy integration failed");
-    app.quitting=true;app.Close();
-   }
+   TelemetryTest();
    Directory.CreateDirectory(DataRoot);File.WriteAllText(Path.Combine(DataRoot,"operations-test.txt"),"PASS: archive totals, raw cleanup, duplicate protection, quality comparison data, GPU energy integration");
   }finally{Directory.Delete(root,true);}
  }
@@ -135,7 +114,7 @@ partial class QwenStatus {
  }
 
  partial class InsightsWindow {
-  readonly ListView queueList=new ListView();readonly Label queueNote=new Label(),archiveNote=new Label(),updateNote=new Label(),energyNote=new Label(),regressionNote=new Label();
+  readonly ListView queueList=new ListView(),energyList=new ListView();readonly Label queueNote=new Label(),archiveNote=new Label(),updateNote=new Label(),energyNote=new Label(),regressionNote=new Label();
   readonly ComboBox retention=new ComboBox(),archiveSource=new ComboBox();
   readonly System.Windows.Forms.Timer queueTimer=new System.Windows.Forms.Timer();
   bool queueLoading;
@@ -207,9 +186,15 @@ partial class QwenStatus {
   }
   void BuildEnergy(){
    var page=Page("노트북 효율");tabs.TabPages.Add(page);
-   energyNote.Dock=DockStyle.Fill;energyNote.Font=new Font("Malgun Gothic",12);energyNote.Padding=new Padding(15,24,15,10);page.Controls.Add(energyNote);RefreshEnergy();
+   energyNote.Dock=DockStyle.Top;energyNote.Height=115;energyNote.Font=new Font("Malgun Gothic",10);energyNote.Padding=new Padding(8,10,8,0);page.Controls.Add(energyNote);
+   energyList.Dock=DockStyle.Fill;energyList.View=View.Details;energyList.FullRowSelect=true;energyList.GridLines=true;
+   foreach(var c in new[]{new ColumnHeader{Text="시각",Width=105},new ColumnHeader{Text="출처",Width=160},new ColumnHeader{Text="출력",Width=80},new ColumnHeader{Text="시간",Width=80},new ColumnHeader{Text="GPU 전체",Width=110},new ColumnHeader{Text="유휴 제외",Width=110},new ColumnHeader{Text="J/토큰",Width=100}})energyList.Columns.Add(c);
+   page.Controls.Add(energyList);page.Controls.SetChildIndex(energyList,0);page.Controls.SetChildIndex(energyNote,1);RefreshEnergy();
   }
-  internal void RefreshEnergy(){if(owner==null)return;energyNote.Text=owner.EnergySummary();}
+  internal void RefreshEnergy(){if(owner==null)return;energyNote.Text=owner.EnergySummary();energyList.BeginUpdate();energyList.Items.Clear();
+   foreach(var r in owner.energyRecords.OrderByDescending(x=>x.At).Take(30))energyList.Items.Add(new ListViewItem(new[]{r.At.ToString("MM-dd HH:mm"),SourceName(r.Source),r.Output.ToString("N0"),r.Seconds.ToString("0.00")+"초",r.GrossJ.ToString("0.0")+" J",double.IsNaN(r.NetJ)?"기준 없음":r.NetJ.ToString("0.0")+" J",double.IsNaN(r.NetJ)||r.Output<=0?"—":(r.NetJ/r.Output).ToString("0.0")}));
+   energyList.EndUpdate();
+  }
   void BuildUpdates(){
    var page=Page("업데이트");tabs.TabPages.Add(page);
    var bar=new FlowLayoutPanel{Dock=DockStyle.Top,Height=42};page.Controls.Add(bar);
