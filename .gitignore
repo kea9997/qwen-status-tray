@@ -16,3 +16,17 @@ token-tests/
 agent-conversations/
 chat-conversations/
 __pycache__/
+
+# Installer-owned downloads, receipts and user data (never ship)
+dependencies/
+backends/
+hermes/
+work/
+setup-backups/
+setup-logs/
+setup-state.json
+setup.lock
+gateway-process.json
+runtime/**/conversations/
+runtime/**/agent-sessions/
+*.tmp

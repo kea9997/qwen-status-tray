@@ -1,0 +1,14 @@
+import assert from 'node:assert/strict';
+import {metrics,aggregate} from './token-metrics.mjs';
+assert.equal(metrics(10,21,3,1).decode_tok_s,10);
+assert.equal(metrics(10,21,3,1).effective_tok_s,7);
+assert.equal(metrics(10,1,3,1).decode_tok_s,null);
+assert.equal(metrics(10,2,0,0).effective_tok_s,null);
+assert.equal(metrics(10,-1,2,1).output_tokens,null);
+assert.equal(metrics(10,null,2,1).effective_tok_s,null);
+assert.equal(metrics(10,4,2,3).ttft_seconds,null);
+const rows=[{status:'completed',...metrics(10,10,1,.1)},{status:'completed',...metrics(10,20,4,.1)},{status:'failed',...metrics(10,999,1,.1)},{status:'completed',warmup:true,...metrics(10,999,1,.1)},{status:'completed',...metrics(null,null,1,.1)}];
+assert.equal(aggregate(rows).effective_tok_s,6);
+assert.equal(aggregate(rows).count,2);
+assert.equal(aggregate([]).effective_tok_s,null);
+console.log('PASS: valid usage, missing/invalid values, TTFT bounds, weighted speed, warmup/failure exclusion');

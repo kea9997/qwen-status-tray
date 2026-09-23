@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Drawing;
 using System.Windows.Forms;
 using System.Net;
@@ -45,8 +45,9 @@ partial class QwenStatus {
    var check=new Button{Text="연결 확인",Bounds=new Rectangle(26,290,145,36)};check.Click+=(s,e)=>CheckConnection();Controls.Add(check);
    var save=new Button{Text="설정 저장",Bounds=new Rectangle(184,290,145,36)};save.Click+=(s,e)=>SaveSettings();Controls.Add(save);
    var delegation=new Button{Text="AI 위임 설정",Bounds=new Rectangle(342,290,160,36),Enabled=owner!=null};delegation.Click+=(s,e)=>{if(owner!=null)owner.OpenDelegation();};Controls.Add(delegation);
+   var install=new Button{Text="설치 도우미",Bounds=new Rectangle(516,290,170,36),Enabled=owner!=null};install.Click+=(s,e)=>{if(owner!=null)owner.OpenInstaller();};Controls.Add(install);
    result.Bounds=new Rectangle(26,345,660,145);result.Anchor=AnchorStyles.Top|AnchorStyles.Bottom|AnchorStyles.Left|AnchorStyles.Right;result.ForeColor=Color.FromArgb(45,55,75);
-   result.Text="Qwen 모델과 공통 대기열은 이 저장소에 포함되지 않습니다.\n서버만 연결해도 상태·GPU 지표는 볼 수 있습니다.\n연결 확인은 서버를 자동으로 시작하지 않습니다.";Controls.Add(result);
+   result.Text="처음이라면 설치 도우미에서 공통 대기열·모델 서버를 준비하세요.\n서버만 연결해도 상태·GPU 지표는 볼 수 있습니다.\n연결 확인은 서버를 자동으로 시작하지 않습니다.";Controls.Add(result);
   }
   static string ProbeLocal(string url,string tokenFile=null){
    try{var request=(HttpWebRequest)WebRequest.Create(url);request.Timeout=2000;request.ReadWriteTimeout=2000;if(tokenFile!=null)request.Headers["x-ui-token"]=File.ReadAllText(tokenFile).Trim();

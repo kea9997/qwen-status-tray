@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
@@ -31,7 +31,7 @@ partial class QwenStatus {
   internal static readonly string[] ClientLabels={"Codex · 이 PC","Claude Desktop · 이 PC","Claude Code · 이 PC","ChatGPT / Claude · 웹"};
   internal static DelegationProfile Defaults(){
    string node=Environment.GetEnvironmentVariable("QWEN_NODE_EXE");
-   return new DelegationProfile{WorkerScript=Setting("localWorkerScript",Path.GetFullPath(Path.Combine(Root,"..","codex-local-worker","server.mjs"))),NodeCommand=string.IsNullOrWhiteSpace(node)?"node":node};
+   return new DelegationProfile{WorkerScript=Setting("localWorkerScript",Path.Combine(RuntimePath("worker","codex-local-worker"),"server.mjs")),NodeCommand=string.IsNullOrWhiteSpace(node)?ConfiguredNode():node};
   }
   internal static string Description(string mode){
    switch(mode){

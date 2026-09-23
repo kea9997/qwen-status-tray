@@ -6,7 +6,7 @@ using System.Windows.Forms;
 
 class TokenTestWindow : Form {
  static readonly string Root=QwenStatus.GatewayRoot;
- static string NodeExe(){string configured=Environment.GetEnvironmentVariable("QWEN_NODE_EXE");if(!string.IsNullOrWhiteSpace(configured))return configured;string bundled=System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),@".cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe");return System.IO.File.Exists(bundled)?bundled:"node.exe";}
+ static string NodeExe(){return QwenStatus.ConfiguredNode();}
  ComboBox profile=new ComboBox();Button start=new Button(),cancel=new Button();TextBox output=new TextBox();Process runner;
  public TokenTestWindow(){
   Text="Qwen · 토큰 테스트";ClientSize=new Size(850,550);MinimumSize=new Size(700,440);Font=new Font("Malgun Gothic",10);
@@ -26,6 +26,7 @@ class TokenTestWindow : Form {
   if(runner!=null)return;output.Clear();
   if(!System.IO.File.Exists(System.IO.Path.Combine(Root,"token-test.mjs"))){Append("토큰 테스트 도구를 찾지 못했습니다. 설정된 대기열 설치를 확인하세요.");return;}
   var info=new ProcessStartInfo(NodeExe(),"\""+Root+"\\token-test.mjs\" "+new[]{"quick","8k","32k","64k","224k"}[profile.SelectedIndex]+" --ui"){WorkingDirectory=Root,UseShellExecute=false,CreateNoWindow=true,RedirectStandardOutput=true,RedirectStandardError=true,RedirectStandardInput=true,StandardErrorEncoding=Encoding.UTF8,StandardOutputEncoding=Encoding.UTF8};
+  if(System.IO.Directory.Exists(System.IO.Path.Combine(Root,"..","worker")))info.EnvironmentVariables["QWEN_BACKEND_FILE"]=System.IO.Path.GetFullPath(System.IO.Path.Combine(Root,"..","..","backend.txt"));
   var p=new Process{StartInfo=info,EnableRaisingEvents=true};runner=p;start.Enabled=profile.Enabled=false;cancel.Enabled=true;
   p.OutputDataReceived+=(s,e)=>{if(e.Data!=null)Append(e.Data);};p.ErrorDataReceived+=(s,e)=>{if(e.Data!=null)Append(e.Data);};
   p.Exited+=(s,e)=>{int code=p.ExitCode;Append("실행 종료 코드: "+code);if(IsHandleCreated&&!IsDisposed)try{BeginInvoke((Action)(()=>{if(runner==p){runner=null;start.Enabled=profile.Enabled=true;cancel.Enabled=false;}p.Dispose();}));}catch(InvalidOperationException){}};

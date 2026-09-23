@@ -10,6 +10,18 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Check portable runtime and install plans
+        shell: pwsh
+        run: |
+          node --test runtime/gateway/test-*.mjs runtime/worker/test-*.mjs
+          if ($LASTEXITCODE -ne 0) { throw "Runtime tests failed" }
+          & ./setup/setup-tests.ps1
+          & ./setup/backend-tests.ps1
+          python ./setup/backend-prepare-tests.py
+          if ($LASTEXITCODE -ne 0) { throw "Backend preparation tests failed" }
       - name: Build Windows app
         shell: cmd
         run: build.cmd
@@ -40,3 +52,7 @@ jobs:
           if ($process.ExitCode -ne 0) { throw "Delegation test exited with $($process.ExitCode)" }
           $result = Get-Content -LiteralPath (Join-Path $env:LOCALAPPDATA 'QwenStatus\delegation-test.txt') -Raw
           if (-not $result.StartsWith('PASS:')) { throw "Delegation test result: $result" }
+          $process = Start-Process -FilePath .\QwenStatus.new.exe -ArgumentList '--install-test' -WindowStyle Hidden -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Installer test exited with $($process.ExitCode)" }
+          $result = Get-Content -LiteralPath (Join-Path $env:LOCALAPPDATA 'QwenStatus\install-test.txt') -Raw
+          if (-not $result.StartsWith('PASS:')) { throw "Installer test result: $result" }

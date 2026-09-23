@@ -1,0 +1,120 @@
+{
+  "schemaVersion": 1,
+  "reviewedAt": "2026-09-24",
+  "listenAddress": "127.0.0.1",
+  "port": 18021,
+  "servedModel": "qwen3.8-27b",
+  "reproducibility": "Source commits, model revisions and base image digests are pinned. Upstream apt repositories and transitive Python dependencies are not a byte-for-byte build lock.",
+  "vllm": {
+    "repository": "https://github.com/syv-ai/HyperQwen.git",
+    "commit": "231592a7009d0d7c876189f7d1f72d8cc791c76c",
+    "contextTokens": 65536,
+    "minimumFreeGiB": 65,
+    "dockerStorageFreeGiB": 40,
+    "minimumRamGiB": 32,
+    "gpuNamePattern": "RTX (3090|4090|5090)( Ti| Laptop GPU)?$",
+    "minimumVramMiB": 23000,
+    "baseImages": {
+      "nvidia/cuda:13.0.1-base-ubuntu24.04": "sha256:f8ef28f579ea42a44b415d2c5d46f788e6a9b395c6c83f2929416e1fc192c143"
+    },
+    "model": {
+      "repository": "dbirks/Qwen3.8-27B-W4A16-AutoRound",
+      "revision": "1f05c441c4e64ae0549de44fa9ea5a6d43610314"
+    },
+    "fastVariant": {
+      "repository": "syvai/qwen3.8-27b-3090-fast-variant",
+      "revision": "124c14e7e8c7d2f5402933b9af368e772a9fcf0c"
+    },
+    "drafter": {
+      "repository": "syvai/Qwen3.8-27B-DFlash2-W4A16",
+      "revision": "4d30ec736ffc6b8688dc2ae2b502d9b48bdec279"
+    },
+    "uncensoredSupported": false,
+    "uncensoredReason": "The requested OrcaRouter checkpoint is BF16. HyperQwen's head preparation does not quantize its BF16 body for a 24 GiB GPU. A compatible, independently validated quantization recipe is required; no substitute checkpoint is silently selected."
+  },
+  "ninfer": {
+    "gpuArchitecture": "Ada",
+    "kvDtype": "rk4v4-e8",
+    "requiresConversion": false,
+    "repository": "https://github.com/sergiuszm/ninfer-4090.git",
+    "commit": "1bd56c9a1bdf457c6188391a9385d44d86e953aa",
+    "contextTokens": 229376,
+    "minimumFreeGiB": 30,
+    "dockerStorageFreeGiB": 30,
+    "minimumRamGiB": 32,
+    "gpuNamePattern": "RTX 4090$",
+    "minimumVramMiB": 23000,
+    "baseImages": {
+      "nvidia/cuda:13.1.2-devel-ubuntu24.04": "sha256:b9f64abf7226fdb3463ca202bc99878ec847171e6c5f77bd34c8d1403fbf1eca",
+      "nvidia/cuda:13.1.2-runtime-ubuntu24.04": "sha256:bff001d3257971cc4752e15ac2d354befa70995ded8e141741ade50569fc192e"
+    },
+    "prepareImage": "python:3.12-slim-bookworm@sha256:392307d22300de8b5986851a12d9176dfc0fc073e65bf6523ebd7dcbeb23564e",
+    "model": {
+      "repository": "neroued/Qwen3.8-27B-NInfer",
+      "revision": "1cbd84e7221e51186bd7f093a149912d2489625b",
+      "filename": "qwen3_8_27b.ninfer",
+      "sha256": "81f924d440c27261d820c19a9f8d45794c5aee410f8a68bd358133fa8c0375da"
+    },
+    "uncensoredSupported": false,
+    "uncensoredReason": "This pinned ninfer-4090 fork only exposes tools.convert.qwen3_8_27b.convert, whose official frontend SHA256 checks reject custom OrcaRouter templates. The newer --recipe/--components CLI belongs to another source version and is not claimed to work here."
+  },
+  "ninferUncensored": {
+    "gpuArchitecture": "Blackwell",
+    "kvDtype": "nvfp4",
+    "requiresConversion": true,
+    "repository": "https://github.com/Neroued/ninfer.git",
+    "commit": "9e163eee4b8acec21ab0ac765107b6a3f287b217",
+    "contextTokens": 229376,
+    "minimumFreeGiB": 110,
+    "dockerStorageFreeGiB": 35,
+    "minimumRamGiB": 32,
+    "gpuNamePattern": "RTX 5090( Laptop GPU)?$",
+    "minimumVramMiB": 23000,
+    "baseImages": {
+      "nvidia/cuda:13.1.2-devel-ubuntu24.04": "sha256:b9f64abf7226fdb3463ca202bc99878ec847171e6c5f77bd34c8d1403fbf1eca",
+      "nvidia/cuda:13.1.2-runtime-ubuntu24.04": "sha256:bff001d3257971cc4752e15ac2d354befa70995ded8e141741ade50569fc192e"
+    },
+    "prepareImage": "python:3.12-slim-bookworm@sha256:392307d22300de8b5986851a12d9176dfc0fc073e65bf6523ebd7dcbeb23564e",
+    "model": {
+      "repository": "orcarouter/Qwen3.8-27B-Uncensored",
+      "revision": "404ea47aaa5d8a8b00049c9e9750089aca011ab2",
+      "filename": "qwen3_8_27b_orcarouter_uncensored.ninfer"
+    },
+    "uncensoredSupported": true,
+    "uncensoredReason": null,
+    "compatibility": "Neroued sm_120a engine and v3 converter must be used together. Not the sm_89 ninfer-4090 fork. CPU conversion; nvfp4 KV; runtime requires Blackwell RTX 5090. Docker build, conversion and GPU execution have not been validated by this package author."
+  },
+  "ninferBlackwell": {
+    "gpuArchitecture": "Blackwell",
+    "kvDtype": "nvfp4",
+    "requiresConversion": true,
+    "repository": "https://github.com/Neroued/ninfer.git",
+    "commit": "9e163eee4b8acec21ab0ac765107b6a3f287b217",
+    "contextTokens": 229376,
+    "minimumFreeGiB": 110,
+    "dockerStorageFreeGiB": 35,
+    "minimumRamGiB": 32,
+    "gpuNamePattern": "RTX 5090( Laptop GPU)?$",
+    "minimumVramMiB": 23000,
+    "baseImages": {
+      "nvidia/cuda:13.1.2-devel-ubuntu24.04": "sha256:b9f64abf7226fdb3463ca202bc99878ec847171e6c5f77bd34c8d1403fbf1eca",
+      "nvidia/cuda:13.1.2-runtime-ubuntu24.04": "sha256:bff001d3257971cc4752e15ac2d354befa70995ded8e141741ade50569fc192e"
+    },
+    "prepareImage": "python:3.12-slim-bookworm@sha256:392307d22300de8b5986851a12d9176dfc0fc073e65bf6523ebd7dcbeb23564e",
+    "model": {
+      "repository": "Qwen/Qwen3.8-27B",
+      "revision": "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0",
+      "filename": "qwen3_8_27b.ninfer"
+    },
+    "uncensoredSupported": false,
+    "uncensoredReason": "Choose the separate ninferUncensored profile for the gated model.",
+    "compatibility": "Public BF16 checkpoint is converted with the matching Neroued v3 converter on CPU. The standard 4090 prebuilt artifact belongs to a different engine generation and is not reused. sm_120a requires Blackwell RTX 5090; this package has not run the Docker build or GPU profile."
+  },
+  "uncensored": {
+    "repository": "orcarouter/Qwen3.8-27B-Uncensored",
+    "revision": "404ea47aaa5d8a8b00049c9e9750089aca011ab2",
+    "gated": true,
+    "accessUrl": "https://huggingface.co/orcarouter/Qwen3.8-27B-Uncensored",
+    "authentication": "The user must personally accept the model access terms and authenticate with Hugging Face. Never embed tokens, cookies, cached credentials or model weights in a release."
+  }
+}

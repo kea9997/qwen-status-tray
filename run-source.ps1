@@ -1,4 +1,4 @@
-param([Parameter(ValueFromRemainingArguments=$true)][string[]]$AppArguments)
+﻿param([Parameter(ValueFromRemainingArguments=$true)][string[]]$AppArguments)
 
 $ErrorActionPreference = 'Stop'
 $sourceRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -14,7 +14,8 @@ try {
         (Join-Path $sourceRoot 'QwenTelemetry.cs'),
         (Join-Path $sourceRoot 'QwenExperience.cs'),
         (Join-Path $sourceRoot 'QwenChatWindow.cs'),
-        (Join-Path $sourceRoot 'QwenDelegation.cs')
+        (Join-Path $sourceRoot 'QwenDelegation.cs'),
+        (Join-Path $sourceRoot 'QwenInstallWindow.cs')
     ) -ReferencedAssemblies @(
         'System.Windows.Forms', 'System.Drawing', 'System.Web.Extensions'
     ) -PassThru -WarningAction SilentlyContinue
