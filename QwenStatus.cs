@@ -12,6 +12,7 @@ using System.Runtime.InteropServices;
 using System.Linq;
 using System.Collections.Generic;
 using System.Collections.Concurrent;
+using System.Globalization;
 using System.Web.Script.Serialization;
 
 partial class QwenStatus : Form {
@@ -44,10 +45,41 @@ partial class QwenStatus : Form {
  NotifyIcon tray=new NotifyIcon(); System.Windows.Forms.Timer timer=new System.Windows.Forms.Timer();
  Icon[] icons=new Icon[5]; bool polling,action,quitting; Process server;
  DateTime requested=DateTime.MinValue, previousTime=DateTime.MinValue; double previousTokens=-1;
+ double lastServerInput=double.NaN,lastServerOutput=double.NaN;
  Task<GpuReading> gpuTask; DateTime lastGpuPoll=DateTime.MinValue; string gpuText="GPU 정보 확인 중…";
  readonly object jobLock=new object(); string latestJobPath; DateTime latestJobCreated=DateTime.MinValue;
  FileSystemWatcher[] jobWatchers; Task<string> initialJobScan;
  readonly ConcurrentQueue<string> dirtyUsage=new ConcurrentQueue<string>(); Task<UsageLedger> usageScan; UsageLedger usageLedger; UsageWindow usageWindow;
+ sealed class ApiPricing {
+  internal const string SourceUrl="https://www.alibabacloud.com/help/en/model-studio/qwen3-8-27b";
+  internal static readonly string FilePath=Path.Combine(DataRoot,"api-price.json");
+  internal static ApiPricing Current=Load(FilePath);
+  internal decimal InputRate=0.50m,OutputRate=3.00m;
+  internal decimal InputCost(long tokens){return tokens*InputRate/1000000m;}
+  internal decimal OutputCost(long tokens){return tokens*OutputRate/1000000m;}
+  internal decimal TotalCost(long input,long output){return InputCost(input)+OutputCost(output);}
+  internal static string Money(decimal value){return "$"+value.ToString(value<0.01m?"0.000000":"0.0000",CultureInfo.InvariantCulture);}
+  internal static ApiPricing Load(string path){
+   var fallback=new ApiPricing();if(!File.Exists(path))return fallback;
+   try{
+    var values=new JavaScriptSerializer().Deserialize<Dictionary<string,object>>(File.ReadAllText(path));decimal input,output;
+    if(values==null||!values.ContainsKey("inputPerMillionUsd")||!values.ContainsKey("outputPerMillionUsd")||
+     !decimal.TryParse(Convert.ToString(values["inputPerMillionUsd"],CultureInfo.InvariantCulture),NumberStyles.Float,CultureInfo.InvariantCulture,out input)||
+     !decimal.TryParse(Convert.ToString(values["outputPerMillionUsd"],CultureInfo.InvariantCulture),NumberStyles.Float,CultureInfo.InvariantCulture,out output)||
+     input<0||output<0||input>1000||output>1000)return fallback;
+    fallback.InputRate=input;fallback.OutputRate=output;
+   }catch{return new ApiPricing();}
+   return fallback;
+  }
+  internal void Save(string path){
+   Directory.CreateDirectory(Path.GetDirectoryName(path));string temp=path+"."+Guid.NewGuid().ToString("N")+".tmp";
+   try{
+    string json=new JavaScriptSerializer().Serialize(new{inputPerMillionUsd=InputRate,outputPerMillionUsd=OutputRate});
+    File.WriteAllText(temp,json,new System.Text.UTF8Encoding(false));
+    if(File.Exists(path))File.Replace(temp,path,null);else File.Move(temp,path);
+   }finally{if(File.Exists(temp))File.Delete(temp);}
+  }
+ }
  partial class UsageLedger {
   class Entry {public long Input,Output;public DateTime Day;public string Source;public double Speed;}
   public class SourceStat {public string Name;public long Input,Output,Today,Week,Count;}
@@ -89,10 +121,12 @@ partial class QwenStatus : Form {
   public long LongestInput(){long max=0;foreach(var entry in entries.Values)max=Math.Max(max,entry.Input);return max;}
  }
  class UsageWindow : Form {
-  Label total=new Label(),detail=new Label(),period=new Label(),today=new Label();Panel chart=new Panel();UsageLedger ledger;
-  public UsageWindow(){
+  Label total=new Label(),period=new Label(),today=new Label();internal readonly Label detail=new Label();Panel chart=new Panel();UsageLedger ledger;readonly QwenStatus owner;
+  public UsageWindow(QwenStatus owner=null){
+   this.owner=owner;
    Text="Qwen 누적 사용량";ClientSize=new Size(720,505);MinimumSize=MaximumSize=new Size(736,544);Font=new Font("Malgun Gothic",10);BackColor=Color.FromArgb(245,247,250);
    Controls.Add(new Label{Text="Qwen 처리량",Bounds=new Rectangle(24,20,660,33),Font=new Font("Malgun Gothic",18,FontStyle.Bold)});
+   var priceButton=new Button{Text="API 단가 설정",Bounds=new Rectangle(548,22,148,34)};priceButton.Click+=(s,e)=>{using(var editor=new PriceSettingsWindow()){if(editor.ShowDialog(this)==DialogResult.OK){UpdateStats(ledger);if(owner!=null)owner.UpdateUsageText(owner.lastServerInput,owner.lastServerOutput);}}};Controls.Add(priceButton);
    total.Bounds=new Rectangle(24,66,660,52);total.Font=new Font("Malgun Gothic",25,FontStyle.Bold);total.ForeColor=Color.FromArgb(37,89,182);Controls.Add(total);
    detail.Bounds=new Rectangle(26,125,660,46);Controls.Add(detail);
    period.Bounds=new Rectangle(26,171,660,26);period.ForeColor=Color.DimGray;Controls.Add(period);
@@ -103,7 +137,8 @@ partial class QwenStatus : Form {
   }
   public void UpdateStats(UsageLedger data){ledger=data;if(data==null){total.Text="계산 중…";detail.Text="저장된 요청 기록을 읽고 있습니다.";period.Text="";today.Text="";}else if(data.Error!=null){total.Text="기록 확인 필요";detail.Text=data.Error;period.Text="";today.Text="";}else{
     total.Text=string.Format("{0:N0} 토큰",data.Input+data.Output);
-    detail.Text=string.Format("입력 {0:N0}   +   출력 {1:N0}   ·   사용량 기록 {2:N0}건",data.Input,data.Output,data.Count);
+    var price=ApiPricing.Current;
+    detail.Text=string.Format("입력 {0:N0}   +   출력 {1:N0}   ·   사용량 기록 {2:N0}건\nAPI 환산 {3} (입력 {4} + 출력 {5})",data.Input,data.Output,data.Count,ApiPricing.Money(price.TotalCost(data.Input,data.Output)),ApiPricing.Money(price.InputCost(data.Input)),ApiPricing.Money(price.OutputCost(data.Output)));
     period.Text="공통 대기열 기록 기간: "+(data.FirstDay==DateTime.MaxValue?"기록 없음":data.FirstDay.ToString("yyyy-MM-dd"))+"부터 · 토큰 테스트 포함"+(data.Unreadable>0?" · 읽기 실패 "+data.Unreadable+"건":"");
     today.Text=string.Format("오늘 {0:N0} 토큰  ·  Qwen 처리량이며 OpenAI 토큰 절약량은 아닙니다.",data.DayTotal(DateTime.Today));
    }chart.Invalidate();
@@ -112,6 +147,23 @@ partial class QwenStatus : Form {
    using(var brush=new SolidBrush(Color.FromArgb(76,139,230)))using(var labelBrush=new SolidBrush(Color.FromArgb(55,65,80)))using(var font=new Font("Malgun Gothic",8)){
     for(int i=0;i<7;i++){int x=23+i*94,h=(int)Math.Round(113.0*values[i]/max);g.FillRectangle(brush,x,132-h,56,h);string day=DateTime.Today.AddDays(i-6).ToString("M/d");g.DrawString(day,font,labelBrush,x+7,149);string value=values[i]>=1000000?(values[i]/1000000.0).ToString("0.#")+"M":values[i]>=1000?(values[i]/1000.0).ToString("0.#")+"K":values[i].ToString();g.DrawString(value,font,labelBrush,x+3,Math.Max(3,128-h-20));}
    }
+  }
+ }
+ class PriceSettingsWindow : Form {
+  readonly NumericUpDown input=new NumericUpDown(),output=new NumericUpDown();
+  public PriceSettingsWindow(){
+   Text="API 비교 단가";ClientSize=new Size(560,280);MinimumSize=MaximumSize=new Size(576,319);Font=new Font("Malgun Gothic",10);BackColor=Color.FromArgb(245,247,250);FormBorderStyle=FormBorderStyle.FixedDialog;MaximizeBox=false;MinimizeBox=false;StartPosition=FormStartPosition.CenterParent;
+   Controls.Add(new Label{Text="Qwen3.8-27B API 기준",Bounds=new Rectangle(22,18,520,31),Font=new Font("Malgun Gothic",15,FontStyle.Bold)});
+   Controls.Add(new Label{Text="입력 100만 토큰당 (USD)",Bounds=new Rectangle(24,68,280,25)});
+   Controls.Add(new Label{Text="출력 100만 토큰당 (USD)",Bounds=new Rectangle(24,111,280,25)});
+   input.Bounds=new Rectangle(330,64,192,30);output.Bounds=new Rectangle(330,107,192,30);
+   foreach(var box in new[]{input,output}){box.Minimum=0;box.Maximum=1000;box.DecimalPlaces=4;box.Increment=0.05m;box.TextAlign=HorizontalAlignment.Right;Controls.Add(box);}
+   input.Value=ApiPricing.Current.InputRate;output.Value=ApiPricing.Current.OutputRate;
+   var source=new LinkLabel{Text="기본값: Alibaba Cloud Model Studio · 싱가포르 국제 요금표",Bounds=new Rectangle(24,153,510,25)};
+   source.LinkClicked+=(s,e)=>{try{Process.Start(new ProcessStartInfo(ApiPricing.SourceUrl){UseShellExecute=true});}catch(Exception ex){MessageBox.Show(ex.Message,"가격표 열기 실패");}};Controls.Add(source);
+   Controls.Add(new Label{Text="추정 비교액입니다. 할인·캐시·전기요금·GPU 비용은 반영하지 않습니다.",Bounds=new Rectangle(24,185,510,28),ForeColor=Color.DimGray});
+   var save=new Button{Text="저장",Bounds=new Rectangle(310,226,100,34)};save.Click+=(s,e)=>{try{var selected=new ApiPricing{InputRate=input.Value,OutputRate=output.Value};selected.Save(ApiPricing.FilePath);ApiPricing.Current=selected;DialogResult=DialogResult.OK;Close();}catch(Exception ex){MessageBox.Show("단가를 저장하지 못했습니다: "+ex.Message,"Qwen");}};Controls.Add(save);
+   var cancel=new Button{Text="취소",Bounds=new Rectangle(422,226,100,34),DialogResult=DialogResult.Cancel};Controls.Add(cancel);AcceptButton=save;CancelButton=cancel;
   }
  }
  class ActivityWindow : Form {
@@ -197,7 +249,7 @@ partial class QwenStatus : Form {
  void OpenTokenTest(){if(tokenWindow==null||tokenWindow.IsDisposed)tokenWindow=new TokenTestWindow();tokenWindow.Show();tokenWindow.WindowState=FormWindowState.Normal;tokenWindow.Activate();}
  void OpenActivity(){if(activityWindow==null||activityWindow.IsDisposed)activityWindow=new ActivityWindow();else activityWindow.Reload();activityWindow.Show();activityWindow.WindowState=FormWindowState.Normal;activityWindow.Activate();}
  static bool HidePreference(){try{string path=File.Exists(PrivacyFile)?PrivacyFile:Path.Combine(Root,"hide-content.txt");return !File.Exists(path)||File.ReadAllText(path).Trim()!="visible";}catch{return true;}}
- void OpenUsage(){if(usageWindow==null||usageWindow.IsDisposed)usageWindow=new UsageWindow();usageWindow.UpdateStats(usageLedger);usageWindow.Show();usageWindow.WindowState=FormWindowState.Normal;usageWindow.Activate();}
+ void OpenUsage(){if(usageWindow==null||usageWindow.IsDisposed)usageWindow=new UsageWindow(this);usageWindow.UpdateStats(usageLedger);usageWindow.Show();usageWindow.WindowState=FormWindowState.Normal;usageWindow.Activate();}
  static void UiLog(string text){try{Directory.CreateDirectory(DataRoot);File.AppendAllText(Path.Combine(DataRoot,"ui-activation.log"),DateTime.UtcNow.ToString("o")+" "+text+Environment.NewLine);}catch{}}
  void Restore(){ UiLog("restore requested");
   if(IsDisposed||quitting)return;
@@ -320,7 +372,8 @@ partial class QwenStatus : Form {
   UpdateMini(status,speed,running,waiting);
  }
  void UpdateUsageText(double serverInput,double serverOutput){
-  usage.Text=!Directory.Exists(SharedRequests)?"공통 대기열 기록 폴더 미연결":usageLedger==null?"기록 누적 계산 중…":usageLedger.Error!=null?"기록 누적 확인 필요":string.Format("기록 누적 {0:N0} 토큰 · {1:N0}건\n입력 {2:N0} · 출력 {3:N0}",usageLedger.Input+usageLedger.Output,usageLedger.Count,usageLedger.Input,usageLedger.Output);
+  lastServerInput=serverInput;lastServerOutput=serverOutput;
+  usage.Text=!Directory.Exists(SharedRequests)?"공통 대기열 기록 폴더 미연결":usageLedger==null?"기록 누적 계산 중…":usageLedger.Error!=null?"기록 누적 확인 필요":string.Format("기록 누적 {0:N0} 토큰 · {1:N0}건 · API 환산 {4}\n입력 {2:N0} · 출력 {3:N0}",usageLedger.Input+usageLedger.Output,usageLedger.Count,usageLedger.Input,usageLedger.Output,ApiPricing.Money(ApiPricing.Current.TotalCost(usageLedger.Input,usageLedger.Output)));
   usage.Text+="\n이번 서버 "+(double.IsNaN(serverInput)||double.IsNaN(serverOutput)?"—":string.Format("{0:N0} 토큰",serverInput+serverOutput));
  }
  async Task Poll(){if(polling)return;polling=true;try{
@@ -358,6 +411,10 @@ partial class QwenStatus : Form {
    var ledger=UsageLedger.Scan(directory);if(ledger.Count!=2||ledger.Input!=300||ledger.Output!=60)throw new Exception("Usage scan failed");
    File.WriteAllText(completed,"{\"status\":\"completed\",\"created_at\":\"2026-09-21T12:00:00Z\",\"usage\":{\"prompt_tokens\":110,\"completion_tokens\":20}}");ledger.AddFile(completed);ledger.AddFile(completed);
    if(ledger.Count!=2||ledger.Input!=310||ledger.Output!=60)throw new Exception("Incremental usage correction failed");
+   var defaultPrice=new ApiPricing();if(defaultPrice.TotalCost(1000000,1000000)!=3.50m||defaultPrice.InputCost(100)!=0.00005m)throw new Exception("API pricing calculation failed");
+   string priceFile=Path.Combine(directory,"api-price.json");var customPrice=new ApiPricing{InputRate=0.25m,OutputRate=2.50m};customPrice.Save(priceFile);
+   var loadedPrice=ApiPricing.Load(priceFile);if(loadedPrice.TotalCost(2000000,1000000)!=3.00m)throw new Exception("Custom API pricing was not persisted");
+   File.WriteAllText(priceFile,"{\"inputPerMillionUsd\":-1,\"outputPerMillionUsd\":3}");if(ApiPricing.Load(priceFile).InputRate!=0.50m)throw new Exception("Invalid API pricing was accepted");
   }finally{Directory.Delete(directory,true);}
  }
  [STAThread] static void Main(string[] args){
@@ -385,7 +442,8 @@ partial class QwenStatus : Form {
     var ledger=UsageLedger.Scan(directory);if(ledger.Count!=2||ledger.Input!=300||ledger.Output!=60||ledger.DayTotal(new DateTime(2026,9,21))!=120)throw new Exception("Historical totals failed");
     File.WriteAllText(a,"{\"status\":\"completed\",\"created_at\":\"2026-09-21T00:00:00+09:00\",\"usage\":{\"prompt_tokens\":110,\"completion_tokens\":20}}");ledger.AddFile(a);ledger.AddFile(a);
     if(ledger.Count!=2||ledger.Input!=310||ledger.Output!=60||ledger.DayTotal(new DateTime(2026,9,21))!=130)throw new Exception("Incremental count or idempotency failed");
-    using(var window=new UsageWindow()){window.UpdateStats(ledger);window.Show();Application.DoEvents();using(var bmp=new Bitmap(window.Width,window.Height)){window.DrawToBitmap(bmp,new Rectangle(0,0,bmp.Width,bmp.Height));bmp.Save(Path.Combine(DataRoot,"usage-preview.png"));}window.Close();}
+    using(var window=new UsageWindow()){window.UpdateStats(ledger);if(!window.detail.Text.Contains("API 환산"))throw new Exception("Usage cost was not displayed");window.Show();Application.DoEvents();using(var bmp=new Bitmap(window.Width,window.Height)){window.DrawToBitmap(bmp,new Rectangle(0,0,bmp.Width,bmp.Height));bmp.Save(Path.Combine(DataRoot,"usage-preview.png"));}window.Close();}
+    using(var editor=new PriceSettingsWindow()){editor.Show();Application.DoEvents();using(var bmp=new Bitmap(editor.Width,editor.Height)){editor.DrawToBitmap(bmp,new Rectangle(0,0,bmp.Width,bmp.Height));bmp.Save(Path.Combine(DataRoot,"price-settings-preview.png"));}editor.Close();}
    }finally{foreach(var file in Directory.GetFiles(directory))File.Delete(file);Directory.Delete(directory);}
    File.WriteAllText(Path.Combine(DataRoot,"usage-test.txt"),"PASS: historical totals, incomplete usage, queued exclusion, incremental correction and no double counting");return;
   }
@@ -408,7 +466,7 @@ partial class QwenStatus : Form {
      string next=Path.Combine(directory,Guid.NewGuid().ToString()+".json");File.WriteAllText(next,"{\"status\":\"queued\"}");
      if(!SpinWait.SpinUntil(()=>{lock(app.jobLock)return app.latestJobPath==next;},2000))throw new Exception("Live request detection failed");
     }
-    app.usageLedger=UsageLedger.Scan(directory);app.Display(2,153,190,0,0,0);
+    app.usageLedger=UsageLedger.Scan(directory);app.Display(2,153,190,0,0,0);if(!app.usage.Text.Contains("API 환산"))throw new Exception("Main cost was not displayed");
     app.Show();Application.DoEvents();using(var bmp=new Bitmap(app.Width,app.Height)){app.DrawToBitmap(bmp,new Rectangle(0,0,bmp.Width,bmp.Height));bmp.Save(Path.Combine(DataRoot,"status-preview.png"));}
     app.quitting=true;app.Close();
    }}finally{foreach(var file in Directory.GetFiles(directory))File.Delete(file);Directory.Delete(directory);}
