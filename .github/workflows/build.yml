@@ -1,0 +1,22 @@
+name: Build and core test
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Windows app
+        shell: cmd
+        run: build.cmd
+      - name: Check state and usage logic
+        shell: pwsh
+        run: |
+          $process = Start-Process -FilePath .\QwenStatus.new.exe -ArgumentList '--core-test' -WindowStyle Hidden -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Core test exited with $($process.ExitCode)" }
+          $result = Get-Content -LiteralPath (Join-Path $env:LOCALAPPDATA 'QwenStatus\core-test-result.txt') -Raw
+          if ($result.Trim() -ne 'PASS') { throw "Core test result: $result" }

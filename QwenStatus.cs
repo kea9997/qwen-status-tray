@@ -319,9 +319,24 @@ class QwenStatus : Form {
   if(!exists){string script=Path.Combine(Root,"start.sh");if(!File.Exists(script))throw new Exception("서버 시작 스크립트가 설정되지 않았습니다.");server=Run(WslPath(script));requested=DateTime.UtcNow;}
  }catch(Exception ex){MessageBox.Show(ex.Message,"Qwen");}finally{action=false;}await Poll();}
  async Task StopServer(){if(action)return;action=true;start.Enabled=stop.Enabled=false;note.Text="서버 종료 중…";try{string script=Path.Combine(Root,"stop.sh");if(!File.Exists(script))throw new Exception("서버 종료 스크립트가 설정되지 않았습니다.");using(var p=Run(WslPath(script))){bool ended=await Task.Run(()=>p.WaitForExit(45000));if(!ended||p.ExitCode!=0)throw new Exception("서버 종료를 확인하지 못했습니다.");}requested=DateTime.MinValue;}catch(Exception ex){MessageBox.Show(ex.Message,"Qwen");}finally{action=false;}await Poll();}
+ static void CoreTest(){
+  if(Classify(false,false,0,0)!=0||Classify(false,true,0,0)!=1||Classify(true,false,0,0)!=2||Classify(true,false,1,0)!=3||Classify(true,false,double.NaN,0)!=4)throw new Exception("State classification failed");
+  if(Metric("vllm:generation_tokens_total{engine=\"0\"} 12\nvllm:generation_tokens_total{engine=\"1\"} 8","generation_tokens_total")!=20)throw new Exception("Metric aggregation failed");
+  string directory=Path.Combine(Path.GetTempPath(),"qwen-core-"+Guid.NewGuid());Directory.CreateDirectory(directory);
+  try{
+   string completed=Path.Combine(directory,Guid.NewGuid()+".json"),incomplete=Path.Combine(directory,Guid.NewGuid()+".json"),queued=Path.Combine(directory,Guid.NewGuid()+".json");
+   File.WriteAllText(completed,"{\"status\":\"completed\",\"created_at\":\"2026-09-21T12:00:00Z\",\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":20}}");
+   File.WriteAllText(incomplete,"{\"status\":\"incomplete\",\"created_at\":\"2026-09-22T12:00:00Z\",\"usage\":{\"prompt_tokens\":200,\"completion_tokens\":40}}");
+   File.WriteAllText(queued,"{\"status\":\"queued\"}");
+   var ledger=UsageLedger.Scan(directory);if(ledger.Count!=2||ledger.Input!=300||ledger.Output!=60)throw new Exception("Usage scan failed");
+   File.WriteAllText(completed,"{\"status\":\"completed\",\"created_at\":\"2026-09-21T12:00:00Z\",\"usage\":{\"prompt_tokens\":110,\"completion_tokens\":20}}");ledger.AddFile(completed);ledger.AddFile(completed);
+   if(ledger.Count!=2||ledger.Input!=310||ledger.Output!=60)throw new Exception("Incremental usage correction failed");
+  }finally{Directory.Delete(directory,true);}
+ }
  [STAThread] static void Main(string[] args){
   SetCurrentProcessExplicitAppUserModelID("Local.QwenStatus.App");Application.EnableVisualStyles();Application.SetCompatibleTextRenderingDefault(false);
   Directory.CreateDirectory(DataRoot);
+  if(args.Length>0&&args[0]=="--core-test"){try{CoreTest();File.WriteAllText(Path.Combine(DataRoot,"core-test-result.txt"),"PASS");}catch(Exception ex){File.WriteAllText(Path.Combine(DataRoot,"core-test-result.txt"),"FAIL: "+ex);Environment.ExitCode=1;}return;}
   if(args.Length>0&&args[0]=="--token-test-ui"){TokenTestWindow.Test();return;}
   if(args.Length>0&&args[0]=="--usage-scan"){
    var ledger=UsageLedger.Scan(SharedRequests);
