@@ -31,11 +31,12 @@ partial class QwenStatus {
  void ObserveGpuHeat(GpuReading reading){if(!double.IsNaN(reading.Temperature)&&reading.Temperature>=88)hotChecks++;else hotChecks=0;
   if(hotChecks==2)NotifyOnce("gpu-hot","GPU 온도 높음","GPU 온도가 88°C 이상입니다. 냉각 상태를 확인하세요.",ToolTipIcon.Warning);
  }
- void OpenSetup(){if(setupWindow==null||setupWindow.IsDisposed)setupWindow=new SetupWindow();setupWindow.Show();setupWindow.WindowState=FormWindowState.Normal;setupWindow.Activate();}
+ void OpenSetup(){if(setupWindow==null||setupWindow.IsDisposed)setupWindow=new SetupWindow(this);setupWindow.Show();setupWindow.WindowState=FormWindowState.Normal;setupWindow.Activate();}
+ static void OpenSupport(){try{System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("https://github.com/kea9997/qwen-status-tray/blob/main/SUPPORT.md"){UseShellExecute=true});}catch(Exception ex){MessageBox.Show(ex.Message,"프로젝트 안내 열기 실패");}}
  static bool IsLoopbackHttp(string text,string path){Uri uri;return Uri.TryCreate(text,UriKind.Absolute,out uri)&&uri.Scheme=="http"&&(uri.Host=="127.0.0.1"||uri.Host=="localhost")&&uri.AbsolutePath.TrimEnd('/').Equals(path,StringComparison.OrdinalIgnoreCase)&&uri.UserInfo==""&&uri.Query==""&&uri.Fragment=="";}
  class SetupWindow : Form {
   readonly TextBox serverBox=new TextBox(),queueBox=new TextBox(),folderBox=new TextBox();readonly Label result=new Label();
-  public SetupWindow(){
+  public SetupWindow(QwenStatus owner=null){
    Text="Qwen 첫 연결 설정";ClientSize=new Size(720,510);MinimumSize=new Size(680,480);Font=new Font("Malgun Gothic",10);BackColor=Color.FromArgb(245,247,250);
    Controls.Add(new Label{Text="서버와 공통 대기열 연결",Bounds=new Rectangle(24,18,640,37),Font=new Font("Malgun Gothic",17,FontStyle.Bold)});
    Controls.Add(new Label{Text="모델 서버 URL",Bounds=new Rectangle(26,76,220,25)});serverBox.Bounds=new Rectangle(26,103,660,30);serverBox.Anchor=AnchorStyles.Top|AnchorStyles.Left|AnchorStyles.Right;serverBox.Text=ServerUrl.TrimEnd('/');Controls.Add(serverBox);
@@ -43,6 +44,7 @@ partial class QwenStatus {
    Controls.Add(new Label{Text="공통 대기열 폴더",Bounds=new Rectangle(26,214,220,25)});folderBox.Bounds=new Rectangle(26,241,660,30);folderBox.Anchor=AnchorStyles.Top|AnchorStyles.Left|AnchorStyles.Right;folderBox.Text=GatewayRoot;Controls.Add(folderBox);
    var check=new Button{Text="연결 확인",Bounds=new Rectangle(26,290,145,36)};check.Click+=(s,e)=>CheckConnection();Controls.Add(check);
    var save=new Button{Text="설정 저장",Bounds=new Rectangle(184,290,145,36)};save.Click+=(s,e)=>SaveSettings();Controls.Add(save);
+   var delegation=new Button{Text="AI 위임 설정",Bounds=new Rectangle(342,290,160,36),Enabled=owner!=null};delegation.Click+=(s,e)=>{if(owner!=null)owner.OpenDelegation();};Controls.Add(delegation);
    result.Bounds=new Rectangle(26,345,660,145);result.Anchor=AnchorStyles.Top|AnchorStyles.Bottom|AnchorStyles.Left|AnchorStyles.Right;result.ForeColor=Color.FromArgb(45,55,75);
    result.Text="Qwen 모델과 공통 대기열은 이 저장소에 포함되지 않습니다.\n서버만 연결해도 상태·GPU 지표는 볼 수 있습니다.\n연결 확인은 서버를 자동으로 시작하지 않습니다.";Controls.Add(result);
   }

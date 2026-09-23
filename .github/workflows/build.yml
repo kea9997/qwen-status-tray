@@ -36,3 +36,7 @@ jobs:
           if ($process.ExitCode -ne 0) { throw "Chat test exited with $($process.ExitCode)" }
           $result = Get-Content -LiteralPath (Join-Path $env:LOCALAPPDATA 'QwenStatus\chat-test.txt') -Raw
           if (-not $result.StartsWith('PASS:')) { throw "Chat test result: $result" }
+          $process = Start-Process -FilePath .\QwenStatus.new.exe -ArgumentList '--delegation-test' -WindowStyle Hidden -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Delegation test exited with $($process.ExitCode)" }
+          $result = Get-Content -LiteralPath (Join-Path $env:LOCALAPPDATA 'QwenStatus\delegation-test.txt') -Raw
+          if (-not $result.StartsWith('PASS:')) { throw "Delegation test result: $result" }

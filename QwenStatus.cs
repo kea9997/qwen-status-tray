@@ -230,6 +230,8 @@ partial class QwenStatus : Form {
   menu.Items.Add("토큰 테스트",null,(s,e)=>OpenTokenTest());
   menu.Items.Add("분석 센터",null,(s,e)=>OpenInsights());menu.Items.Add("작은 상태창",null,(s,e)=>ToggleMini());
   menu.Items.Add("연결 설정",null,(s,e)=>OpenSetup());
+  menu.Items.Add("AI 위임 설정",null,(s,e)=>OpenDelegation());
+  menu.Items.Add("프로젝트 · 후원 안내",null,(s,e)=>OpenSupport());
   var alertsMenu=new ToolStripMenuItem("중요 알림"){Checked=notifyEnabled,CheckOnClick=true};alertsMenu.CheckedChanged+=(s,e)=>SetNotifyPreference(alertsMenu.Checked);menu.Items.Add(alertsMenu);
   menu.Items.Add("다음 시작: ninfer 240K",null,(s,e)=>ChooseBackend("ninfer"));
   menu.Items.Add("다음 시작: vLLM 64K",null,(s,e)=>ChooseBackend("vllm"));
@@ -238,7 +240,7 @@ partial class QwenStatus : Form {
   tray.ContextMenuStrip=menu;tray.Icon=icons[4];tray.Text="Qwen 상태";tray.Visible=true;tray.MouseClick+=(s,e)=>{if(e.Button==MouseButtons.Left)Restore();};
   FormClosing+=(s,e)=>{if(!quitting&&e.CloseReason==CloseReason.UserClosing){e.Cancel=true;Hide();}};
   Resize+=(s,e)=>{if(WindowState==FormWindowState.Minimized)Hide();};
-  FormClosed+=(s,e)=>{timer.Stop();StopPowerMonitor();if(jobWatchers!=null)foreach(var watcher in jobWatchers)if(watcher!=null)watcher.Dispose();if(usageWindow!=null&&!usageWindow.IsDisposed)usageWindow.Close();if(activityWindow!=null&&!activityWindow.IsDisposed)activityWindow.Close();if(insightsWindow!=null&&!insightsWindow.IsDisposed)insightsWindow.Close();if(setupWindow!=null&&!setupWindow.IsDisposed)setupWindow.Close();if(miniWindow!=null&&!miniWindow.IsDisposed)miniWindow.Shutdown();if(tokenWindow!=null)tokenWindow.Shutdown();if(chatWindow!=null&&!chatWindow.IsDisposed)chatWindow.Shutdown();tray.Dispose();foreach(var icon in icons)icon.Dispose();};
+  FormClosed+=(s,e)=>{timer.Stop();StopPowerMonitor();CloseDelegation();if(jobWatchers!=null)foreach(var watcher in jobWatchers)if(watcher!=null)watcher.Dispose();if(usageWindow!=null&&!usageWindow.IsDisposed)usageWindow.Close();if(activityWindow!=null&&!activityWindow.IsDisposed)activityWindow.Close();if(insightsWindow!=null&&!insightsWindow.IsDisposed)insightsWindow.Close();if(setupWindow!=null&&!setupWindow.IsDisposed)setupWindow.Close();if(miniWindow!=null&&!miniWindow.IsDisposed)miniWindow.Shutdown();if(tokenWindow!=null)tokenWindow.Shutdown();if(chatWindow!=null&&!chatWindow.IsDisposed)chatWindow.Shutdown();tray.Dispose();foreach(var icon in icons)icon.Dispose();};
   Directory.CreateDirectory(DataRoot);
   jobWatchers=new[]{WatchJobs(Jobs),WatchJobs(SharedRequests)};
   initialJobScan=Task.Run(()=>LatestJob(Jobs));
@@ -425,6 +427,7 @@ partial class QwenStatus : Form {
   if(args.Length>0&&args[0]=="--operations-test"){OperationsTest();return;}
   if(args.Length>0&&args[0]=="--experience-test"){ExperienceTest();return;}
   if(args.Length>0&&args[0]=="--chat-test"){ChatWindow.Test();return;}
+  if(args.Length>0&&args[0]=="--delegation-test"){DelegationTest();return;}
   if(args.Length>0&&args[0]=="--chat-live-test"){ChatWindow.LiveTest();return;}
   if(args.Length>0&&args[0]=="--insights-ui-test"){InsightsUiTest();return;}
   if(args.Length>0&&args[0]=="--token-test-ui"){TokenTestWindow.Test();return;}
@@ -481,6 +484,7 @@ partial class QwenStatus : Form {
   using(var showRequest=new EventWaitHandle(false,EventResetMode.AutoReset,"Local\\QwenStatusApp.Show"))
   using(var mutex=new Mutex(true,"Local\\QwenStatusApp",out created)){
    if(!created){UiLog("secondary signal");showRequest.Set();return;} UiLog("primary startup");
+   try{InitializeDelegationPolicy();}catch(Exception ex){UiLog("delegation profile initialization failed: "+ex.Message);}
    using(var app=new QwenStatus())using(var showTimer=new System.Windows.Forms.Timer()){
     // Keep a real window handle on the UI thread even during tray-only startup.
     IntPtr handle=app.Handle; UiLog("window handle ready");
