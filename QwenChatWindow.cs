@@ -41,7 +41,7 @@ partial class QwenStatus {
   }
  }
  internal sealed class ChatWindow : Form {
-  static readonly Color Back=Color.FromArgb(16,24,39),Card=Color.FromArgb(25,36,54),Ink=Color.FromArgb(234,241,249),Muted=Color.FromArgb(151,171,194),Accent=Color.FromArgb(74,209,183);
+   static readonly Color Back=Color.FromArgb(8,9,9),Card=Color.FromArgb(16,17,17),Ink=Color.FromArgb(239,241,239),Muted=Color.FromArgb(161,169,161),Accent=Color.FromArgb(169,213,180);
   readonly ListBox conversations=new ListBox();readonly RichTextBox transcript=new RichTextBox();readonly TextBox composer=new TextBox();
   readonly Label heading=new Label(),status=new Label();readonly Button send=new Button(),cancel=new Button(),delete=new Button();
   readonly Timer poll=new Timer();readonly List<ChatConversation> history=ChatHistory.Load();
@@ -62,19 +62,19 @@ partial class QwenStatus {
   static string Value(Dictionary<string,object> data,string key){return data!=null&&data.ContainsKey(key)&&data[key]!=null?Convert.ToString(data[key]):"";}
   public ChatWindow(){
    Text="Qwen · 직접 대화";ClientSize=new Size(1060,740);MinimumSize=new Size(760,540);Font=new Font("Malgun Gothic",10);BackColor=Back;ForeColor=Ink;StartPosition=FormStartPosition.CenterScreen;
-   var sidebar=new Panel{Dock=DockStyle.Left,Width=250,BackColor=Color.FromArgb(20,30,46),Padding=new Padding(14)};Controls.Add(sidebar);
-   var newChat=ButtonStyle("＋ 새 대화",Accent,Back);newChat.Dock=DockStyle.Top;newChat.Height=42;newChat.Click+=(s,e)=>NewConversation();sidebar.Controls.Add(newChat);
-   delete=ButtonStyle("대화 삭제",Card,Ink);delete.Dock=DockStyle.Bottom;delete.Height=38;delete.Click+=async(s,e)=>await DeleteConversation();sidebar.Controls.Add(delete);
-   conversations.Dock=DockStyle.Fill;conversations.BorderStyle=BorderStyle.None;conversations.BackColor=sidebar.BackColor;conversations.ForeColor=Ink;conversations.Font=new Font(Font.FontFamily,10);conversations.IntegralHeight=false;conversations.DrawMode=DrawMode.OwnerDrawFixed;conversations.ItemHeight=36;conversations.DrawItem+=(s,e)=>{if(e.Index<0)return;bool selected=(e.State&DrawItemState.Selected)!=0;using(var background=new SolidBrush(selected?Color.FromArgb(42,74,91):sidebar.BackColor))e.Graphics.FillRectangle(background,e.Bounds);using(var brush=new SolidBrush(selected?Accent:Ink))e.Graphics.DrawString(conversations.Items[e.Index].ToString(),conversations.Font,brush,new RectangleF(e.Bounds.Left+11,e.Bounds.Top+8,e.Bounds.Width-17,e.Bounds.Height-8));};conversations.SelectedIndexChanged+=(s,e)=>SelectConversation();sidebar.Controls.Add(conversations);sidebar.Controls.SetChildIndex(conversations,0);
+    var sidebar=new Panel{Dock=DockStyle.Left,Width=250,BackColor=Back,Padding=new Padding(14)};sidebar.Paint+=(s,e)=>{using(var pen=new Pen(Muted,1))e.Graphics.DrawLine(pen,sidebar.Width-1,0,sidebar.Width-1,sidebar.Height);};Controls.Add(sidebar);
+    var newChat=ButtonStyle("＋ 새 대화",Back,Accent);newChat.Dock=DockStyle.Top;newChat.Height=42;newChat.Click+=(s,e)=>NewConversation();sidebar.Controls.Add(newChat);
+    delete=ButtonStyle("대화 삭제",Back,Ink);delete.Dock=DockStyle.Bottom;delete.Height=38;delete.Click+=async(s,e)=>await DeleteConversation();sidebar.Controls.Add(delete);
+    conversations.Dock=DockStyle.Fill;conversations.BorderStyle=BorderStyle.None;conversations.BackColor=sidebar.BackColor;conversations.ForeColor=Ink;conversations.Font=new Font(Font.FontFamily,10);conversations.IntegralHeight=false;conversations.DrawMode=DrawMode.OwnerDrawFixed;conversations.ItemHeight=36;conversations.DrawItem+=(s,e)=>{if(e.Index<0)return;bool selected=(e.State&DrawItemState.Selected)!=0;using(var background=new SolidBrush(selected?Card:sidebar.BackColor))e.Graphics.FillRectangle(background,e.Bounds);using(var brush=new SolidBrush(selected?Accent:Ink))e.Graphics.DrawString(conversations.Items[e.Index].ToString(),conversations.Font,brush,new RectangleF(e.Bounds.Left+11,e.Bounds.Top+8,e.Bounds.Width-17,e.Bounds.Height-8));if(selected)using(var pen=new Pen(Muted,1))e.Graphics.DrawRectangle(pen,e.Bounds.Left,e.Bounds.Top,e.Bounds.Width-1,e.Bounds.Height-1);};conversations.SelectedIndexChanged+=(s,e)=>SelectConversation();sidebar.Controls.Add(conversations);sidebar.Controls.SetChildIndex(conversations,0);
    var body=new Panel{Dock=DockStyle.Fill,Padding=new Padding(20,16,20,16),BackColor=Back};Controls.Add(body);body.BringToFront();
-   var header=new Panel{Dock=DockStyle.Top,Height=68};body.Controls.Add(header);
+    var header=new Panel{Dock=DockStyle.Top,Height=68};header.Paint+=(s,e)=>{using(var pen=new Pen(Muted,1))e.Graphics.DrawLine(pen,0,header.Height-1,header.Width,header.Height-1);};body.Controls.Add(header);
    heading.Text="직접 대화";heading.Font=new Font(Font.FontFamily,18,FontStyle.Bold);heading.ForeColor=Ink;heading.Dock=DockStyle.Top;heading.Height=38;header.Controls.Add(heading);
    status.ForeColor=Muted;status.Dock=DockStyle.Bottom;status.Height=26;status.Text="같은 대화에서는 앞선 내용을 이어갑니다.";header.Controls.Add(status);
    var composePanel=new Panel{Dock=DockStyle.Bottom,Height=155,Padding=new Padding(0,8,0,0)};body.Controls.Add(composePanel);
    composePanel.Controls.Add(new Label{Text="메시지 입력  ·  Enter 전송  ·  Shift+Enter 줄바꿈",Dock=DockStyle.Top,Height=26,ForeColor=Muted,Font=new Font("Malgun Gothic",9)});
    var actions=new FlowLayoutPanel{Dock=DockStyle.Bottom,Height=43,FlowDirection=FlowDirection.RightToLeft};composePanel.Controls.Add(actions);
-   send=ButtonStyle("보내기  ↵",Accent,Back);send.Width=116;send.Click+=async(s,e)=>await Send();actions.Controls.Add(send);
-   cancel=ButtonStyle("중단",Card,Ink);cancel.Width=92;cancel.Enabled=false;cancel.Click+=async(s,e)=>await Cancel();actions.Controls.Add(cancel);
+    send=ButtonStyle("보내기  ↵",Back,Accent);send.Width=116;send.Click+=async(s,e)=>await Send();actions.Controls.Add(send);
+    cancel=ButtonStyle("중단",Back,Ink);cancel.Width=92;cancel.Visible=false;cancel.Click+=async(s,e)=>await Cancel();actions.Controls.Add(cancel);
    composer.Multiline=true;composer.AcceptsReturn=true;composer.ScrollBars=ScrollBars.Vertical;composer.Dock=DockStyle.Fill;composer.BackColor=Card;composer.ForeColor=Ink;composer.BorderStyle=BorderStyle.FixedSingle;composer.Font=new Font(Font.FontFamily,11);composer.KeyDown+=async(s,e)=>{if(e.KeyCode==Keys.Enter&&!e.Shift){e.SuppressKeyPress=true;await Send();}};composePanel.Controls.Add(composer);composer.BringToFront();
    transcript.Dock=DockStyle.Fill;transcript.ReadOnly=true;transcript.BorderStyle=BorderStyle.None;transcript.BackColor=Back;transcript.ForeColor=Ink;transcript.Font=new Font(Font.FontFamily,11);transcript.ScrollBars=RichTextBoxScrollBars.Vertical;transcript.DetectUrls=true;body.Controls.Add(transcript);transcript.BringToFront();
    poll.Interval=600;poll.Tick+=async(s,e)=>await Poll();poll.Start();
@@ -83,8 +83,8 @@ partial class QwenStatus {
    FormClosing+=(s,e)=>{if(!closing&&e.CloseReason==CloseReason.UserClosing){e.Cancel=true;Hide();}};
    FormClosed+=(s,e)=>poll.Dispose();
   }
-  static Button ButtonStyle(string label,Color background,Color foreground){return new Button{Text=label,BackColor=background,ForeColor=foreground,FlatStyle=FlatStyle.Flat,Height=36,Margin=new Padding(4),Font=new Font("Malgun Gothic",10,FontStyle.Bold)};}
-  void SetBusy(bool value){busy=value;send.Enabled=!value;cancel.Enabled=value;delete.Enabled=!value;conversations.Enabled=!value;composer.Enabled=!value;}
+   static Button ButtonStyle(string label,Color background,Color foreground){var button=new Button{Text=label,BackColor=background,ForeColor=foreground,FlatStyle=FlatStyle.Flat,Height=36,Margin=new Padding(4),Font=new Font("Malgun Gothic",10,FontStyle.Bold)};button.FlatAppearance.BorderColor=foreground==Accent?Accent:Muted;button.FlatAppearance.MouseOverBackColor=Card;return button;}
+   void SetBusy(bool value){busy=value;send.Visible=!value;cancel.Visible=value;delete.Enabled=!value;conversations.Enabled=!value;composer.Enabled=!value;}
   void NewConversation(){
    if(busy)return;
    if(current!=null&&current.Turns.Count==0){conversations.SelectedItem=current;composer.Focus();return;}
