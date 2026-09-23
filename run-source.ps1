@@ -9,7 +9,8 @@ try {
     $types = Add-Type -Path @(
         (Join-Path $sourceRoot 'QwenStatus.cs'),
         (Join-Path $sourceRoot 'TokenTestWindow.cs'),
-        (Join-Path $sourceRoot 'QwenInsights.cs')
+        (Join-Path $sourceRoot 'QwenInsights.cs'),
+        (Join-Path $sourceRoot 'QwenOperations.cs')
     ) -ReferencedAssemblies @(
         'System.Windows.Forms', 'System.Drawing', 'System.Web.Extensions'
     ) -PassThru -WarningAction SilentlyContinue

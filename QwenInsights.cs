@@ -57,7 +57,7 @@ partial class QwenStatus {
   }
  }
 
- class InsightsWindow : Form {
+ partial class InsightsWindow : Form {
   readonly QwenStatus owner;
   internal readonly TabControl tabs=new TabControl();
   readonly ComboBox recent=new ComboBox(),benchmarkBackend=new ComboBox();
@@ -72,9 +72,9 @@ partial class QwenStatus {
   public InsightsWindow(QwenStatus app){
    owner=app;Text="Qwen 분석 센터";ClientSize=new Size(920,650);MinimumSize=new Size(760,560);Font=new Font("Malgun Gothic",9);BackColor=Color.FromArgb(245,247,250);
    tabs.Dock=DockStyle.Fill;tabs.Padding=new Point(16,8);Controls.Add(tabs);
-   BuildTimeline();BuildDiagnostics();BuildBenchmarks();BuildSources();BuildCard();
+   BuildTimeline();BuildDiagnostics();BuildBenchmarks();BuildSources();BuildCard();BuildOperations();
    LoadBenchmarks();ReloadTimeline();RefreshUsage();
-   tabs.SelectedIndexChanged+=(s,e)=>{if(tabs.SelectedIndex==1)ReloadDiagnostics();if(tabs.SelectedIndex==3)RefreshUsage();if(tabs.SelectedIndex==4)RefreshCard();};
+   tabs.SelectedIndexChanged+=(s,e)=>{if(tabs.SelectedIndex==1)ReloadDiagnostics();if(tabs.SelectedIndex==3)RefreshUsage();if(tabs.SelectedIndex==4)RefreshCard();if(tabs.SelectedIndex==5)ReloadQueue();if(tabs.SelectedIndex==6)RefreshArchiveSources();if(tabs.SelectedIndex==7)RefreshEnergy();};
   }
   static TabPage Page(string title){return new TabPage(title){BackColor=Color.FromArgb(245,247,250),Padding=new Padding(16)};}
   static Button ActionButton(string title){return new Button{Text=title,AutoSize=true,Height=34,Margin=new Padding(0,0,10,0)};}
@@ -168,7 +168,7 @@ partial class QwenStatus {
   }
 
   class BenchRecord {public string Path {get;set;}public string Backend {get;set;}public string Added {get;set;}}
-  public class BenchSummary {public string Profile,Status;public int Runs;public double WarmupTtft=double.NaN,MeanTtft=double.NaN,MeanSpeed=double.NaN,MaxInput=double.NaN;}
+  public class BenchSummary {public string Profile,Status;public int Runs,RecallPassed,RecallTotal;public double WarmupTtft=double.NaN,MeanTtft=double.NaN,MeanSpeed=double.NaN,MaxInput=double.NaN;}
   void BuildBenchmarks(){
    var page=Page("백엔드 비교");tabs.TabPages.Add(page);
    var bar=new FlowLayoutPanel{Dock=DockStyle.Top,Height=42};page.Controls.Add(bar);
@@ -223,6 +223,8 @@ partial class QwenStatus {
     bool warm=row.ContainsKey("warmup")&&Convert.ToBoolean(row["warmup"]);double t=Value(row,"ttft_seconds"),v=Value(row,"decode_tok_s"),input=Value(row,"input_tokens");
     if(!double.IsNaN(input)&&(double.IsNaN(s.MaxInput)||input>s.MaxInput))s.MaxInput=input;
     if(warm){if(!double.IsNaN(t))s.WarmupTtft=t;continue;}
+    if(row.ContainsKey("recall_pass")&&row["recall_pass"]!=null){s.RecallTotal++;if(Convert.ToBoolean(row["recall_pass"]))s.RecallPassed++;}
+    if(row.ContainsKey("quality_only")&&Convert.ToBoolean(row["quality_only"]))continue;
     s.Runs++;if(!double.IsNaN(t)){ttft+=t;ttftCount++;}if(!double.IsNaN(v)){speed+=v;speedCount++;}
    }
    if(ttftCount>0)s.MeanTtft=ttft/ttftCount;if(speedCount>0)s.MeanSpeed=speed/speedCount;
@@ -244,7 +246,7 @@ partial class QwenStatus {
    foreach(var s in ledger.SourceStats())sourceList.Items.Add(new ListViewItem(new[]{SourceName(s.Name),s.Count.ToString("N0"),s.Input.ToString("N0"),s.Output.ToString("N0"),s.Today.ToString("N0"),s.Week.ToString("N0"),(s.Input+s.Output).ToString("N0")}));
    sourceList.EndUpdate();usageSummary.Text=string.Format("기록된 요청 {0:N0}건 · 입력 {1:N0} / 출력 {2:N0} 토큰\n'연결 앱'은 기존 기록만으로 Hermes·Codex 등을 더 세분할 수 없습니다. 토큰 테스트도 별도 출처로 표시합니다.",ledger.Count,ledger.Input,ledger.Output);
   }
-  public void OnLedgerUpdated(){if(tabs.SelectedIndex==3)RefreshUsage();else if(tabs.SelectedIndex==4)RefreshCard();}
+  public void OnLedgerUpdated(){if(tabs.SelectedIndex==3)RefreshUsage();else if(tabs.SelectedIndex==4)RefreshCard();else if(tabs.SelectedIndex==6)RefreshArchiveSources();}
 
   void BuildCard(){
    var page=Page("공유 카드");tabs.TabPages.Add(page);
@@ -301,9 +303,9 @@ partial class QwenStatus {
   using(var app=new QwenStatus()){
    app.usageLedger=UsageLedger.Scan(fixtureDir);
    app.OpenInsights();Application.DoEvents();
-   if(app.insightsWindow==null||app.insightsWindow.tabs.TabPages.Count!=5)throw new Exception("Analysis tabs not created");
+   if(app.insightsWindow==null||app.insightsWindow.tabs.TabPages.Count!=9)throw new Exception("Analysis tabs not created");
    using(var image=new Bitmap(app.insightsWindow.Width,app.insightsWindow.Height)){app.insightsWindow.DrawToBitmap(image,new Rectangle(0,0,image.Width,image.Height));image.Save(Path.Combine(DataRoot,"insights-ui-preview.png"));}
-   foreach(int tab in new[]{1,2,3,4}){
+   foreach(int tab in new[]{1,2,3,4,5,6,7,8}){
     app.insightsWindow.tabs.SelectedIndex=tab;Application.DoEvents();
     using(var image=new Bitmap(app.insightsWindow.Width,app.insightsWindow.Height)){app.insightsWindow.DrawToBitmap(image,new Rectangle(0,0,image.Width,image.Height));image.Save(Path.Combine(DataRoot,"insights-tab-"+tab+".png"));}
    }
@@ -312,6 +314,6 @@ partial class QwenStatus {
    using(var image=new Bitmap(app.miniWindow.Width,app.miniWindow.Height)){app.miniWindow.DrawToBitmap(image,new Rectangle(0,0,image.Width,image.Height));image.Save(Path.Combine(DataRoot,"mini-preview.png"));}
    app.quitting=true;app.Close();
   }}finally{Directory.Delete(fixtureDir,true);}
-  File.WriteAllText(Path.Combine(DataRoot,"insights-ui-test.txt"),"PASS: five tabs, mini panel, window rendering");
+  File.WriteAllText(Path.Combine(DataRoot,"insights-ui-test.txt"),"PASS: nine tabs, mini panel, window rendering");
  }
 }

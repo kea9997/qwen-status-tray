@@ -44,11 +44,11 @@ partial class QwenStatus : Form {
  NotifyIcon tray=new NotifyIcon(); System.Windows.Forms.Timer timer=new System.Windows.Forms.Timer();
  Icon[] icons=new Icon[5]; bool polling,action,quitting; Process server;
  DateTime requested=DateTime.MinValue, previousTime=DateTime.MinValue; double previousTokens=-1;
- Task<string> gpuTask; DateTime lastGpuPoll=DateTime.MinValue; string gpuText="GPU 정보 확인 중…";
+ Task<GpuReading> gpuTask; DateTime lastGpuPoll=DateTime.MinValue; string gpuText="GPU 정보 확인 중…";
  readonly object jobLock=new object(); string latestJobPath; DateTime latestJobCreated=DateTime.MinValue;
  FileSystemWatcher[] jobWatchers; Task<string> initialJobScan;
  readonly ConcurrentQueue<string> dirtyUsage=new ConcurrentQueue<string>(); Task<UsageLedger> usageScan; UsageLedger usageLedger; UsageWindow usageWindow;
- class UsageLedger {
+ partial class UsageLedger {
   class Entry {public long Input,Output;public DateTime Day;public string Source;public double Speed;}
   public class SourceStat {public string Name;public long Input,Output,Today,Week,Count;}
   readonly Dictionary<string,Entry> entries=new Dictionary<string,Entry>(StringComparer.OrdinalIgnoreCase);
@@ -58,6 +58,7 @@ partial class QwenStatus : Form {
   public long DayTotal(DateTime day){long value;return daily.TryGetValue(day.Date,out value)?value:0;}
   public void AddFile(string path){
    if(!Regex.IsMatch(Path.GetFileName(path),@"^[a-fA-F0-9-]{36}\.json$"))return;
+   if(archivedIds.Contains(Path.GetFileNameWithoutExtension(path)))return;
    try{var data=new JavaScriptSerializer().Deserialize<Dictionary<string,object>>(File.ReadAllText(path));
     var usage=data.ContainsKey("usage")?data["usage"] as Dictionary<string,object>:null;
     double input=Number(usage,"prompt_tokens"),output=Number(usage,"completion_tokens");
@@ -75,7 +76,7 @@ partial class QwenStatus : Form {
     if(day<FirstDay)FirstDay=day;
    }catch(Exception){unreadable.Add(path);}
   }
-  public static UsageLedger Scan(string directory){var result=new UsageLedger();try{if(Directory.Exists(directory))foreach(var file in Directory.EnumerateFiles(directory,"*.json"))result.AddFile(file);}catch(Exception ex){result.Error=ex.Message;}return result;}
+  public static UsageLedger Scan(string directory,string archivePath=null){var result=new UsageLedger();try{if(archivePath==null&&string.Equals(Path.GetFullPath(directory),Path.GetFullPath(SharedRequests),StringComparison.OrdinalIgnoreCase))archivePath=ArchiveFile;result.LoadArchive(archivePath,directory);if(Directory.Exists(directory))foreach(var file in Directory.EnumerateFiles(directory,"*.json"))result.AddFile(file);}catch(Exception ex){result.Error=ex.Message;}return result;}
   public SourceStat[] SourceStats(){
    var groups=new Dictionary<string,SourceStat>(StringComparer.OrdinalIgnoreCase);DateTime today=DateTime.Today,week=today.AddDays(-6);
    foreach(var entry in entries.Values){string key=string.IsNullOrWhiteSpace(entry.Source)?"출처 미확인":entry.Source;SourceStat row;
@@ -279,15 +280,17 @@ partial class QwenStatus : Form {
   return "대기 "+sec("queue_seconds")+" · 첫 응답 "+sec("first_token_seconds")+" · 생성 "+sec("generation_seconds");
  }
  static Icon MakeIcon(Color color,string glyph){using(var b=new Bitmap(32,32))using(var g=Graphics.FromImage(b))using(var brush=new SolidBrush(color))using(var f=new Font("Arial",17,FontStyle.Bold))using(var fmt=new StringFormat{Alignment=StringAlignment.Center,LineAlignment=StringAlignment.Center}){g.SmoothingMode=SmoothingMode.AntiAlias;g.Clear(Color.Transparent);g.FillEllipse(brush,1,1,30,30);g.DrawString(glyph,f,Brushes.White,new RectangleF(0,0,32,32),fmt);IntPtr h=b.GetHicon();Icon result=(Icon)Icon.FromHandle(h).Clone();DestroyIcon(h);return result;}}
- static string GpuStatus(){
-  try{using(var process=Process.Start(new ProcessStartInfo("nvidia-smi.exe","--query-gpu=memory.used,memory.total,temperature.gpu,utilization.gpu --format=csv,noheader,nounits"){UseShellExecute=false,CreateNoWindow=true,RedirectStandardOutput=true,RedirectStandardError=true})){
-   if(!process.WaitForExit(3000)){process.Kill();return "GPU 정보 응답 지연";}
-   if(process.ExitCode!=0)return "GPU 정보 사용 불가";
+ static GpuReading GpuStatus(){
+  try{using(var process=Process.Start(new ProcessStartInfo("nvidia-smi.exe","--query-gpu=memory.used,memory.total,temperature.gpu,utilization.gpu,power.draw --format=csv,noheader,nounits"){UseShellExecute=false,CreateNoWindow=true,RedirectStandardOutput=true,RedirectStandardError=true})){
+   if(!process.WaitForExit(3000)){process.Kill();return new GpuReading{Text="GPU 정보 응답 지연"};}
+   if(process.ExitCode!=0)return new GpuReading{Text="GPU 정보 사용 불가"};
    string[] values=process.StandardOutput.ReadToEnd().Split(new[]{',','\r','\n'},StringSplitOptions.RemoveEmptyEntries);
-   if(values.Length<4)return "GPU 정보 사용 불가";
+   if(values.Length<4)return new GpuReading{Text="GPU 정보 사용 불가"};
    double used=double.Parse(values[0],System.Globalization.CultureInfo.InvariantCulture),total=double.Parse(values[1],System.Globalization.CultureInfo.InvariantCulture);
-   return string.Format("GPU 전체 {0}% · VRAM {1:0.0}/{2:0.0} GiB ({3:0}%) · {4}°C",values[3].Trim(),used/1024,total/1024,used/total*100,values[2].Trim());
-  }}catch{return "GPU 정보 사용 불가";}
+   double watts=double.NaN;double.TryParse(values.Length>4?values[4].Trim():"",System.Globalization.NumberStyles.Float,System.Globalization.CultureInfo.InvariantCulture,out watts);
+   if(values.Length<5||values[4].IndexOf("N/A",StringComparison.OrdinalIgnoreCase)>=0)watts=double.NaN;
+   return new GpuReading{Text=string.Format("GPU 전체 {0}% · VRAM {1:0.0}/{2:0.0} GiB ({3:0}%) · {4}°C{5}",values[3].Trim(),used/1024,total/1024,used/total*100,values[2].Trim(),double.IsNaN(watts)?"":" · "+watts.ToString("0")+"W"),Watts=watts,Temperature=double.Parse(values[2],System.Globalization.CultureInfo.InvariantCulture)};
+  }}catch{return new GpuReading{Text="GPU 정보 사용 불가"};}
  }
  static string Get(string suffix){var req=(HttpWebRequest)WebRequest.Create(ServerUrl+suffix);req.Timeout=1000;req.ReadWriteTimeout=1000;using(var res=req.GetResponse())using(var reader=new StreamReader(res.GetResponseStream()))return reader.ReadToEnd();}
  static string Backend(){try{return File.ReadAllText(BackendFile).Trim()=="ninfer"?"ninfer":"vLLM";}catch{return "vLLM";}}
@@ -324,8 +327,8 @@ partial class QwenStatus : Form {
   bool live=data[0]==1;bool loading=requested!=DateTime.MinValue&&(DateTime.UtcNow-requested).TotalMinutes<10;
   if(server!=null&&server.HasExited&&!live)loading=false;if(live)requested=DateTime.MinValue;
   double speed=double.NaN;DateTime now=DateTime.UtcNow;if(live&&!double.IsNaN(data[4])){if(previousTokens>=0&&data[4]>=previousTokens)speed=(data[4]-previousTokens)/(now-previousTime).TotalSeconds;previousTokens=data[4];previousTime=now;}else previousTokens=-1;
-  if(gpuTask==null&&(now-lastGpuPoll).TotalSeconds>=10){lastGpuPoll=now;gpuTask=Task.Run(()=>GpuStatus());}
-  if(gpuTask!=null&&gpuTask.IsCompleted){gpuText=gpuTask.Status==TaskStatus.RanToCompletion?gpuTask.Result:"GPU 정보 사용 불가";gpuTask=null;}
+  if(gpuTask==null&&(now-lastGpuPoll).TotalSeconds>=(data[1]>0?2:10)){lastGpuPoll=now;gpuTask=Task.Run(()=>GpuStatus());}
+  if(gpuTask!=null&&gpuTask.IsCompleted){if(gpuTask.Status==TaskStatus.RanToCompletion){gpuText=gpuTask.Result.Text;RecordEnergy(gpuTask.Result,data[4],data[1],now);}else gpuText="GPU 정보 사용 불가";gpuTask=null;}
   bool ledgerChanged=false;
   if(usageScan!=null&&usageScan.IsCompleted){if(usageScan.Status==TaskStatus.RanToCompletion){usageLedger=usageScan.Result;ledgerChanged=true;}usageScan=null;}
   if(usageLedger!=null){string path;int n=0;while(n++<100&&dirtyUsage.TryDequeue(out path)){usageLedger.AddFile(path);ledgerChanged=true;}if(usageWindow!=null&&!usageWindow.IsDisposed&&usageWindow.Visible)usageWindow.UpdateStats(usageLedger);}
@@ -359,6 +362,7 @@ partial class QwenStatus : Form {
   Directory.CreateDirectory(DataRoot);
   if(args.Length>0&&args[0]=="--core-test"){try{CoreTest();File.WriteAllText(Path.Combine(DataRoot,"core-test-result.txt"),"PASS");}catch(Exception ex){File.WriteAllText(Path.Combine(DataRoot,"core-test-result.txt"),"FAIL: "+ex);Environment.ExitCode=1;}return;}
   if(args.Length>0&&args[0]=="--insights-test"){InsightsTest();return;}
+  if(args.Length>0&&args[0]=="--operations-test"){OperationsTest();return;}
   if(args.Length>0&&args[0]=="--insights-ui-test"){InsightsUiTest();return;}
   if(args.Length>0&&args[0]=="--token-test-ui"){TokenTestWindow.Test();return;}
   if(args.Length>0&&args[0]=="--usage-scan"){

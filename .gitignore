@@ -6,6 +6,7 @@
 *.p12
 *.key
 *.pem
+source-version.txt
 backend.txt
 settings.json
 ui-token.txt
