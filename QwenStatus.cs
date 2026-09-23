@@ -14,7 +14,7 @@ using System.Collections.Generic;
 using System.Collections.Concurrent;
 using System.Web.Script.Serialization;
 
-class QwenStatus : Form {
+partial class QwenStatus : Form {
  [DllImport("user32.dll")] static extern bool DestroyIcon(IntPtr h);
  [DllImport("shell32.dll",CharSet=CharSet.Unicode)] static extern int SetCurrentProcessExplicitAppUserModelID(string id);
  static readonly string Root=SourceRoot();
@@ -49,7 +49,8 @@ class QwenStatus : Form {
  FileSystemWatcher[] jobWatchers; Task<string> initialJobScan;
  readonly ConcurrentQueue<string> dirtyUsage=new ConcurrentQueue<string>(); Task<UsageLedger> usageScan; UsageLedger usageLedger; UsageWindow usageWindow;
  class UsageLedger {
-  class Entry {public long Input,Output;public DateTime Day;}
+  class Entry {public long Input,Output;public DateTime Day;public string Source;public double Speed;}
+  public class SourceStat {public string Name;public long Input,Output,Today,Week,Count;}
   readonly Dictionary<string,Entry> entries=new Dictionary<string,Entry>(StringComparer.OrdinalIgnoreCase);
   readonly HashSet<string> unreadable=new HashSet<string>(StringComparer.OrdinalIgnoreCase);
   readonly Dictionary<DateTime,long> daily=new Dictionary<DateTime,long>();
@@ -63,9 +64,10 @@ class QwenStatus : Form {
     if(double.IsNaN(input)||double.IsNaN(output)||input<0||output<0)return;
     unreadable.Remove(path);
     DateTimeOffset created;DateTime day=DateTimeOffset.TryParse(Field(data,"created_at"),out created)?created.LocalDateTime.Date:File.GetCreationTime(path).Date;
-    var entry=new Entry{Input=(long)input,Output=(long)output,Day=day};Entry previous;
+    double generation=Number(data,"generation_seconds"),speed=!double.IsNaN(generation)&&generation>0?output/generation:double.NaN;
+    var entry=new Entry{Input=(long)input,Output=(long)output,Day=day,Source=Field(data,"source"),Speed=speed};Entry previous;
     if(entries.TryGetValue(path,out previous)){
-     if(previous.Input==entry.Input&&previous.Output==entry.Output&&previous.Day==entry.Day)return;
+    if(previous.Input==entry.Input&&previous.Output==entry.Output&&previous.Day==entry.Day&&previous.Source==entry.Source&&(previous.Speed==entry.Speed||(double.IsNaN(previous.Speed)&&double.IsNaN(entry.Speed))))return;
      Input-=previous.Input;Output-=previous.Output;daily[previous.Day]-=previous.Input+previous.Output;
     }
     entries[path]=entry;Input+=entry.Input;Output+=entry.Output;
@@ -74,6 +76,16 @@ class QwenStatus : Form {
    }catch(Exception){unreadable.Add(path);}
   }
   public static UsageLedger Scan(string directory){var result=new UsageLedger();try{if(Directory.Exists(directory))foreach(var file in Directory.EnumerateFiles(directory,"*.json"))result.AddFile(file);}catch(Exception ex){result.Error=ex.Message;}return result;}
+  public SourceStat[] SourceStats(){
+   var groups=new Dictionary<string,SourceStat>(StringComparer.OrdinalIgnoreCase);DateTime today=DateTime.Today,week=today.AddDays(-6);
+   foreach(var entry in entries.Values){string key=string.IsNullOrWhiteSpace(entry.Source)?"출처 미확인":entry.Source;SourceStat row;
+    if(!groups.TryGetValue(key,out row)){row=new SourceStat{Name=key};groups[key]=row;}
+    row.Input+=entry.Input;row.Output+=entry.Output;row.Count++;if(entry.Day==today)row.Today+=entry.Input+entry.Output;if(entry.Day>=week&&entry.Day<=today)row.Week+=entry.Input+entry.Output;
+   }
+   return groups.Values.OrderByDescending(x=>x.Input+x.Output).ToArray();
+  }
+  public double PeakSpeed(){double max=double.NaN;foreach(var entry in entries.Values)if(!double.IsNaN(entry.Speed)&&(double.IsNaN(max)||entry.Speed>max))max=entry.Speed;return max;}
+  public long LongestInput(){long max=0;foreach(var entry in entries.Values)max=Math.Max(max,entry.Input);return max;}
  }
  class UsageWindow : Form {
   Label total=new Label(),detail=new Label(),period=new Label(),today=new Label();Panel chart=new Panel();UsageLedger ledger;
@@ -158,10 +170,12 @@ class QwenStatus : Form {
   var agent=new Button{Text="Hermes 에이전트",Bounds=new Rectangle(354,743,310,45)};agent.Click+=(s,e)=>OpenRequest(true);Controls.Add(agent);
   var activity=new Button{Text="최근 작업 내역",Bounds=new Rectangle(24,803,310,45)};activity.Click+=(s,e)=>OpenActivity();Controls.Add(activity);
   var tokenTest=new Button{Text="토큰 속도 · 문맥 테스트",Bounds=new Rectangle(354,803,310,45)};tokenTest.Click+=(s,e)=>OpenTokenTest();Controls.Add(tokenTest);
+  var insights=new Button{Text="분석 센터 · 진단 · 비교 · 공유",Bounds=new Rectangle(24,856,640,34)};insights.Click+=(s,e)=>OpenInsights();Controls.Add(insights);
   var menu=new ContextMenuStrip();menu.Items.Add("상태창 열기",null,(s,e)=>Restore());
   menu.Items.Add("직접 대화",null,(s,e)=>OpenRequest(false));menu.Items.Add("Hermes 에이전트",null,(s,e)=>OpenRequest(true));
   menu.Items.Add("최근 작업 내역",null,(s,e)=>OpenActivity());
   menu.Items.Add("토큰 테스트",null,(s,e)=>OpenTokenTest());
+  menu.Items.Add("분석 센터",null,(s,e)=>OpenInsights());menu.Items.Add("작은 상태창",null,(s,e)=>ToggleMini());
   menu.Items.Add("다음 시작: ninfer 240K",null,(s,e)=>ChooseBackend("ninfer"));
   menu.Items.Add("다음 시작: vLLM 64K",null,(s,e)=>ChooseBackend("vllm"));
   menu.Items.Add("서버 켜기",null,async(s,e)=>await StartServer());menu.Items.Add("서버 끄기",null,async(s,e)=>await StopServer());
@@ -169,7 +183,7 @@ class QwenStatus : Form {
   tray.ContextMenuStrip=menu;tray.Icon=icons[4];tray.Text="Qwen 상태";tray.Visible=true;tray.MouseClick+=(s,e)=>{if(e.Button==MouseButtons.Left)Restore();};
   FormClosing+=(s,e)=>{if(!quitting&&e.CloseReason==CloseReason.UserClosing){e.Cancel=true;Hide();}};
   Resize+=(s,e)=>{if(WindowState==FormWindowState.Minimized)Hide();};
-  FormClosed+=(s,e)=>{timer.Stop();if(jobWatchers!=null)foreach(var watcher in jobWatchers)if(watcher!=null)watcher.Dispose();if(usageWindow!=null&&!usageWindow.IsDisposed)usageWindow.Close();if(activityWindow!=null&&!activityWindow.IsDisposed)activityWindow.Close();if(tokenWindow!=null)tokenWindow.Shutdown();tray.Dispose();foreach(var icon in icons)icon.Dispose();};
+  FormClosed+=(s,e)=>{timer.Stop();if(jobWatchers!=null)foreach(var watcher in jobWatchers)if(watcher!=null)watcher.Dispose();if(usageWindow!=null&&!usageWindow.IsDisposed)usageWindow.Close();if(activityWindow!=null&&!activityWindow.IsDisposed)activityWindow.Close();if(insightsWindow!=null&&!insightsWindow.IsDisposed)insightsWindow.Close();if(miniWindow!=null&&!miniWindow.IsDisposed)miniWindow.Shutdown();if(tokenWindow!=null)tokenWindow.Shutdown();tray.Dispose();foreach(var icon in icons)icon.Dispose();};
   Directory.CreateDirectory(DataRoot);
   jobWatchers=new[]{WatchJobs(Jobs),WatchJobs(SharedRequests)};
   initialJobScan=Task.Run(()=>LatestJob(Jobs));
@@ -236,7 +250,7 @@ class QwenStatus : Form {
  static double Number(Dictionary<string,object> data,string key){object value;double number;return data!=null&&data.TryGetValue(key,out value)&&value!=null&&double.TryParse(value.ToString(),System.Globalization.NumberStyles.Float,System.Globalization.CultureInfo.InvariantCulture,out number)?number:double.NaN;}
  static string Seconds(double value){return double.IsNaN(value)?"—":value.ToString("0.0")+"초";}
  static string Phase(string status,bool hasLive){return status=="queued"?"공통 대기열에서 기다리는 중":status=="running"?(hasLive?"답변 생성 중":"첫 토큰 준비 중"):status=="completed"?"완료":status=="incomplete"?"출력 한도 도달 · 미완성":status=="failed"?"실패":status=="cancelled"?"취소됨":status;}
- static string SourceName(string source){return source=="direct-chat"?"직접 대화":source=="token-test"?"토큰 테스트":source=="client"?"연결 앱":source=="chat-summary"?"대화 요약":source=="codex-worker"?"Codex 위임":string.IsNullOrEmpty(source)?"출처 미확인":source;}
+ static string SourceName(string source){return source=="direct-chat"?"직접 대화":source=="token-test"?"토큰 테스트":source=="client"?"연결 앱":source=="hermes-agent"?"Hermes 에이전트":source=="hermes-telegram"?"Hermes 텔레그램":source=="Codex local_qwen"||source=="codex-worker"?"Codex 위임":source=="chat-summary"?"대화 요약":string.IsNullOrEmpty(source)?"출처 미확인":source;}
  void ShowJob(){
   var item=history.SelectedItem as JobItem;if(item==null){jobInfo.Text="아직 요청 기록이 없습니다.";return;}
   try{var data=new JavaScriptSerializer().Deserialize<Dictionary<string,object>>(File.ReadAllText(item.Path));
@@ -299,6 +313,7 @@ class QwenStatus : Form {
   start.Enabled=!action&&status==0&&File.Exists(Path.Combine(Root,"start.sh"));stop.Enabled=!action&&status!=0&&File.Exists(Path.Combine(Root,"stop.sh"));
   UpdateUsageText(input,output);
   rate.Text=(double.IsNaN(speed)?"서버 출력 속도 —":string.Format("서버 출력 속도 {0:N1} tok/s",speed))+"\n"+gpuText;
+  UpdateMini(status,speed,running,waiting);
  }
  void UpdateUsageText(double serverInput,double serverOutput){
   usage.Text=!Directory.Exists(SharedRequests)?"공통 대기열 기록 폴더 미연결":usageLedger==null?"기록 누적 계산 중…":usageLedger.Error!=null?"기록 누적 확인 필요":string.Format("기록 누적 {0:N0} 토큰 · {1:N0}건\n입력 {2:N0} · 출력 {3:N0}",usageLedger.Input+usageLedger.Output,usageLedger.Count,usageLedger.Input,usageLedger.Output);
@@ -311,8 +326,10 @@ class QwenStatus : Form {
   double speed=double.NaN;DateTime now=DateTime.UtcNow;if(live&&!double.IsNaN(data[4])){if(previousTokens>=0&&data[4]>=previousTokens)speed=(data[4]-previousTokens)/(now-previousTime).TotalSeconds;previousTokens=data[4];previousTime=now;}else previousTokens=-1;
   if(gpuTask==null&&(now-lastGpuPoll).TotalSeconds>=10){lastGpuPoll=now;gpuTask=Task.Run(()=>GpuStatus());}
   if(gpuTask!=null&&gpuTask.IsCompleted){gpuText=gpuTask.Status==TaskStatus.RanToCompletion?gpuTask.Result:"GPU 정보 사용 불가";gpuTask=null;}
-  if(usageScan!=null&&usageScan.IsCompleted){if(usageScan.Status==TaskStatus.RanToCompletion)usageLedger=usageScan.Result;usageScan=null;}
-  if(usageLedger!=null){string path;int n=0;while(n++<100&&dirtyUsage.TryDequeue(out path))usageLedger.AddFile(path);if(usageWindow!=null&&!usageWindow.IsDisposed&&usageWindow.Visible)usageWindow.UpdateStats(usageLedger);}
+  bool ledgerChanged=false;
+  if(usageScan!=null&&usageScan.IsCompleted){if(usageScan.Status==TaskStatus.RanToCompletion){usageLedger=usageScan.Result;ledgerChanged=true;}usageScan=null;}
+  if(usageLedger!=null){string path;int n=0;while(n++<100&&dirtyUsage.TryDequeue(out path)){usageLedger.AddFile(path);ledgerChanged=true;}if(usageWindow!=null&&!usageWindow.IsDisposed&&usageWindow.Visible)usageWindow.UpdateStats(usageLedger);}
+  if(ledgerChanged&&insightsWindow!=null&&!insightsWindow.IsDisposed&&insightsWindow.Visible)insightsWindow.OnLedgerUpdated();
   Display(Classify(live,loading,data[1],data[2]),data[3],data[4],speed,data[1],data[2]);
   if(Visible)RefreshJobs();
  }catch(Exception ex){note.Text=ex.Message;}finally{polling=false;}}
@@ -341,6 +358,8 @@ class QwenStatus : Form {
   SetCurrentProcessExplicitAppUserModelID("Local.QwenStatus.App");Application.EnableVisualStyles();Application.SetCompatibleTextRenderingDefault(false);
   Directory.CreateDirectory(DataRoot);
   if(args.Length>0&&args[0]=="--core-test"){try{CoreTest();File.WriteAllText(Path.Combine(DataRoot,"core-test-result.txt"),"PASS");}catch(Exception ex){File.WriteAllText(Path.Combine(DataRoot,"core-test-result.txt"),"FAIL: "+ex);Environment.ExitCode=1;}return;}
+  if(args.Length>0&&args[0]=="--insights-test"){InsightsTest();return;}
+  if(args.Length>0&&args[0]=="--insights-ui-test"){InsightsUiTest();return;}
   if(args.Length>0&&args[0]=="--token-test-ui"){TokenTestWindow.Test();return;}
   if(args.Length>0&&args[0]=="--usage-scan"){
    var ledger=UsageLedger.Scan(SharedRequests);
@@ -372,7 +391,8 @@ class QwenStatus : Form {
     if(!app.jobInfo.Text.Contains("첫 토큰 준비 중"))throw new Exception("First token phase failed");
     File.WriteAllText(Path.ChangeExtension(fixture,"live.txt"),"생성 중인 답변");app.ShowJob();
     if(!app.jobInfo.Text.Contains("답변 생성 중")||!app.outputText.Text.Contains("생성 중인 답변"))throw new Exception("Streaming phase failed");
-   File.WriteAllText(fixture,"{\"status\":\"completed\",\"source\":\"direct-chat\",\"usage\":{\"prompt_tokens\":122880,\"completion_tokens\":100},\"queue_seconds\":1,\"first_token_seconds\":2,\"generation_seconds\":4}");app.ShowJob();
+   long halfContext=Backend()=="ninfer"?122880:32768;
+   File.WriteAllText(fixture,"{\"status\":\"completed\",\"source\":\"direct-chat\",\"usage\":{\"prompt_tokens\":"+halfContext+",\"completion_tokens\":100},\"queue_seconds\":1,\"first_token_seconds\":2,\"generation_seconds\":4}");app.ShowJob();
    if(app.contextBar.Value!=500||!app.jobInfo.Text.Contains("25.0 tok/s")||!app.jobInfo.Text.Contains("50%"))throw new Exception("Usage display failed");
     using(var watcher=app.WatchJobs(directory)){
      string next=Path.Combine(directory,Guid.NewGuid().ToString()+".json");File.WriteAllText(next,"{\"status\":\"queued\"}");
