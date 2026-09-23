@@ -149,7 +149,8 @@ partial class QwenStatus : Form {
   Font=new Font("Malgun Gothic",10);BackColor=Color.FromArgb(245,247,250);StartPosition=FormStartPosition.CenterScreen;
   MaximizeBox=false;ShowInTaskbar=false;
   Color[] colors={Color.SlateGray,Color.RoyalBlue,Color.SeaGreen,Color.DarkOrange,Color.Firebrick};
-  for(int i=0;i<5;i++)icons[i]=MakeIcon(colors[i]);
+  string[] glyphs={"−","~","Q",">","?"};
+  for(int i=0;i<5;i++)icons[i]=MakeIcon(colors[i],glyphs[i]);
   Label title=new Label{Text="Qwen 서버",Bounds=new Rectangle(24,18,640,32),Font=new Font(Font.FontFamily,18,FontStyle.Bold)};Controls.Add(title);
   state.Bounds=new Rectangle(24,60,640,40);state.Font=new Font(Font.FontFamily,21,FontStyle.Bold);Controls.Add(state);
   note.Bounds=new Rectangle(26,106,640,38);note.ForeColor=Color.DimGray;Controls.Add(note);
@@ -171,7 +172,6 @@ partial class QwenStatus : Form {
   var activity=new Button{Text="최근 작업 내역",Bounds=new Rectangle(24,803,310,45)};activity.Click+=(s,e)=>OpenActivity();Controls.Add(activity);
   var tokenTest=new Button{Text="토큰 속도 · 문맥 테스트",Bounds=new Rectangle(354,803,310,45)};tokenTest.Click+=(s,e)=>OpenTokenTest();Controls.Add(tokenTest);
   var insights=new Button{Text="분석 센터 · 진단 · 비교 · 공유",Bounds=new Rectangle(24,856,640,34)};insights.Click+=(s,e)=>OpenInsights();Controls.Add(insights);
-  BuildDashboard(chat,agent,activity,tokenTest,insights);
   var menu=new ContextMenuStrip();menu.Items.Add("상태창 열기",null,(s,e)=>Restore());
   menu.Items.Add("직접 대화",null,(s,e)=>OpenRequest(false));menu.Items.Add("Hermes 에이전트",null,(s,e)=>OpenRequest(true));
   menu.Items.Add("최근 작업 내역",null,(s,e)=>OpenActivity());
@@ -248,7 +248,7 @@ partial class QwenStatus : Form {
   if(directory==Jobs&&Directory.Exists(SharedRequests))files=files.Concat(new DirectoryInfo(SharedRequests).GetFiles("*.json"));
   return files.Where(f=>Regex.IsMatch(f.Name,@"^[a-fA-F0-9-]{36}\.json$")).OrderByDescending(f=>f.CreationTimeUtc).Select(f=>f.FullName).FirstOrDefault();
  }
-  void ClearLive(){inputText.Clear();outputText.Clear();jobInfo.Text=Directory.Exists(SharedRequests)?"현재 요청 없음 · 다음 요청을 기다립니다.":"공통 대기열 기록 폴더 미연결 · settings.json의 gatewayDirectory를 확인하세요.";contextBar.Value=0;if(contextMeter!=null)contextMeter.Invalidate();}
+ void ClearLive(){inputText.Clear();outputText.Clear();jobInfo.Text=Directory.Exists(SharedRequests)?"현재 요청 없음 · 다음 요청을 기다립니다.":"공통 대기열 기록 폴더 미연결 · settings.json의 gatewayDirectory를 확인하세요.";contextBar.Value=0;}
  static double Number(Dictionary<string,object> data,string key){object value;double number;return data!=null&&data.TryGetValue(key,out value)&&value!=null&&double.TryParse(value.ToString(),System.Globalization.NumberStyles.Float,System.Globalization.CultureInfo.InvariantCulture,out number)?number:double.NaN;}
  static string Seconds(double value){return double.IsNaN(value)?"—":value.ToString("0.0")+"초";}
  static string Phase(string status,bool hasLive){return status=="queued"?"공통 대기열에서 기다리는 중":status=="running"?(hasLive?"답변 생성 중":"첫 토큰 준비 중"):status=="completed"?"완료":status=="incomplete"?"출력 한도 도달 · 미완성":status=="failed"?"실패":status=="cancelled"?"취소됨":status;}
@@ -265,8 +265,7 @@ partial class QwenStatus : Form {
    var usageData=data.ContainsKey("usage")?data["usage"] as Dictionary<string,object>:null;
    double prompt=Number(usageData,"prompt_tokens"),completion=Number(usageData,"completion_tokens");
    int limit=Backend()=="ninfer"?245760:65536;
-    contextBar.Value=double.IsNaN(prompt)?0:(int)Math.Max(0,Math.Min(1000,Math.Round(prompt/limit*1000)));
-    if(contextMeter!=null)contextMeter.Invalidate();
+   contextBar.Value=double.IsNaN(prompt)?0:(int)Math.Max(0,Math.Min(1000,Math.Round(prompt/limit*1000)));
    double generation=Number(data,"generation_seconds"),duration=Number(data,"request_seconds");
    double tokps=double.IsNaN(completion)?double.NaN:(!double.IsNaN(generation)&&generation>0?completion/generation:(!double.IsNaN(duration)&&duration>0?completion/duration:double.NaN));
    string speed=double.IsNaN(tokps)?"속도 —":(!double.IsNaN(generation)&&generation>0?"생성 속도 ":"전체 속도 ")+tokps.ToString("0.0")+" tok/s";
@@ -281,18 +280,7 @@ partial class QwenStatus : Form {
   Func<string,string> sec=k=>d.ContainsKey(k)&&d[k]!=null?Convert.ToDouble(d[k]).ToString("0.00")+"초":"—";
   return "대기 "+sec("queue_seconds")+" · 첫 응답 "+sec("first_token_seconds")+" · 생성 "+sec("generation_seconds");
  }
-  static Icon MakeIcon(Color color){
-   using(var bitmap=new Bitmap(64,64))using(var graphics=Graphics.FromImage(bitmap))using(var shape=new GraphicsPath()){
-    graphics.SmoothingMode=SmoothingMode.AntiAlias;graphics.Clear(Color.Transparent);
-    shape.AddArc(3,3,18,18,180,90);shape.AddArc(43,3,18,18,270,90);shape.AddArc(43,43,18,18,0,90);shape.AddArc(3,43,18,18,90,90);shape.CloseFigure();
-    using(var surface=new SolidBrush(Color.FromArgb(9,10,10)))graphics.FillPath(surface,shape);
-    using(var border=new Pen(Color.FromArgb(195,203,195),2.5f))graphics.DrawPath(border,shape);
-    using(var mark=new Pen(Color.White,5.5f)){graphics.DrawEllipse(mark,14,13,35,35);graphics.DrawLine(mark,38,42,51,54);}
-    using(var indicator=new SolidBrush(color))graphics.FillEllipse(indicator,45,8,11,11);
-    using(var edge=new Pen(Color.FromArgb(9,10,10),1.5f))graphics.DrawEllipse(edge,45,8,11,11);
-    IntPtr handle=bitmap.GetHicon();try{return (Icon)Icon.FromHandle(handle).Clone();}finally{DestroyIcon(handle);}
-   }
-  }
+ static Icon MakeIcon(Color color,string glyph){using(var b=new Bitmap(32,32))using(var g=Graphics.FromImage(b))using(var brush=new SolidBrush(color))using(var f=new Font("Arial",17,FontStyle.Bold))using(var fmt=new StringFormat{Alignment=StringAlignment.Center,LineAlignment=StringAlignment.Center}){g.SmoothingMode=SmoothingMode.AntiAlias;g.Clear(Color.Transparent);g.FillEllipse(brush,1,1,30,30);g.DrawString(glyph,f,Brushes.White,new RectangleF(0,0,32,32),fmt);IntPtr h=b.GetHicon();Icon result=(Icon)Icon.FromHandle(h).Clone();DestroyIcon(h);return result;}}
  static GpuReading GpuStatus(){
   try{using(var process=Process.Start(new ProcessStartInfo("nvidia-smi.exe","--query-gpu=memory.used,memory.total,temperature.gpu,utilization.gpu,power.draw --format=csv,noheader,nounits"){UseShellExecute=false,CreateNoWindow=true,RedirectStandardOutput=true,RedirectStandardError=true})){
    if(!process.WaitForExit(3000)){process.Kill();return new GpuReading{Text="GPU 정보 응답 지연"};}
@@ -323,20 +311,17 @@ partial class QwenStatus : Form {
  static int Classify(bool healthy,bool loading,double running,double waiting){return !healthy?(loading?1:0):(!double.IsNaN(running)&&!double.IsNaN(waiting)?(running+waiting>0?3:2):4);}
  void Display(int status,double input,double output,double speed,double running,double waiting){
   string[] names={"꺼짐","준비 중","대기","작업 중","상태 확인 필요"};
-  Text="Qwen "+Backend()+" · "+names[status];state.Text=names[status]+" · "+Backend();state.ForeColor=new Color[]{Color.FromArgb(177,191,205),Color.FromArgb(114,172,255),Color.FromArgb(72,207,185),Color.FromArgb(255,178,80),Color.FromArgb(255,112,112)}[status];
+  Text="Qwen "+Backend()+" · "+names[status];state.Text=names[status]+" · "+Backend();state.ForeColor=new Color[]{Color.SlateGray,Color.RoyalBlue,Color.SeaGreen,Color.DarkOrange,Color.Firebrick}[status];
   Icon=icons[status];tray.Icon=icons[status];tray.Text=Text;
   note.Text=status==0?"Codex가 직접 처리합니다.":status==1?"모델을 준비하고 있습니다.":status==3?string.Format("처리 {0}건 · 대기 {1}건",running,waiting):status==2?"필요한 작업을 Codex가 Qwen에 위임합니다.":"서버는 응답하지만 요청 통계를 읽지 못했습니다.";
   start.Enabled=!action&&status==0&&File.Exists(Path.Combine(Root,"start.sh"));stop.Enabled=!action&&status!=0&&File.Exists(Path.Combine(Root,"stop.sh"));
   UpdateUsageText(input,output);
-   speedCountLabel.Text=double.IsNaN(speed)?"— tok/s":string.Format("{0:N1} tok/s",speed);
-   rate.Text=gpuText;
-  TrackSpeed(speed);
+  rate.Text=(double.IsNaN(speed)?"서버 출력 속도 —":string.Format("서버 출력 속도 {0:N1} tok/s",speed))+"\n"+gpuText;
   UpdateMini(status,speed,running,waiting);
  }
  void UpdateUsageText(double serverInput,double serverOutput){
-   totalCountLabel.Text=usageLedger==null||usageLedger.Error!=null?"—":string.Format("{0:N0}",usageLedger.Input+usageLedger.Output);
-   usage.Text=!Directory.Exists(SharedRequests)?"공통 대기열 기록 폴더 미연결":usageLedger==null?"기록 누적 계산 중…":usageLedger.Error!=null?"기록 누적 확인 필요":string.Format("{0:N0}건 · 입력 {1:N0} / 출력 {2:N0}",usageLedger.Count,usageLedger.Input,usageLedger.Output);
-   usage.Text+="\n이번 서버 "+(double.IsNaN(serverInput)||double.IsNaN(serverOutput)?"—":string.Format("{0:N0} 토큰",serverInput+serverOutput));
+  usage.Text=!Directory.Exists(SharedRequests)?"공통 대기열 기록 폴더 미연결":usageLedger==null?"기록 누적 계산 중…":usageLedger.Error!=null?"기록 누적 확인 필요":string.Format("기록 누적 {0:N0} 토큰 · {1:N0}건\n입력 {2:N0} · 출력 {3:N0}",usageLedger.Input+usageLedger.Output,usageLedger.Count,usageLedger.Input,usageLedger.Output);
+  usage.Text+="\n이번 서버 "+(double.IsNaN(serverInput)||double.IsNaN(serverOutput)?"—":string.Format("{0:N0} 토큰",serverInput+serverOutput));
  }
  async Task Poll(){if(polling)return;polling=true;try{
   double[] data=await Task.Run(()=>{try{Get("health");try{string m=Get("metrics");double running=Metric(m,"num_requests_running"),waiting=Metric(m,"num_requests_waiting");try{using(var wc=new WebClient()){var q=new JavaScriptSerializer().Deserialize<Dictionary<string,object>>(wc.DownloadString(QueueUrl));running=Math.Max(running,Convert.ToDouble(q["running"]));waiting+=Convert.ToDouble(q["waiting"]);}}catch{}return new[]{1.0,running,waiting,Metric(m,"prompt_tokens_total"),Metric(m,"generation_tokens_total")};}catch{return new[]{1.0,double.NaN,double.NaN,double.NaN,double.NaN};}}catch{return new[]{0.0,0.0,0.0,double.NaN,double.NaN};}});
@@ -384,7 +369,6 @@ partial class QwenStatus : Form {
   if(args.Length>0&&args[0]=="--experience-test"){ExperienceTest();return;}
   if(args.Length>0&&args[0]=="--chat-test"){ChatWindow.Test();return;}
   if(args.Length>0&&args[0]=="--chat-live-test"){ChatWindow.LiveTest();return;}
-  if(args.Length>0&&args[0]=="--icon-test"){using(var app=new QwenStatus())using(var preview=new Bitmap(400,160))using(var g=Graphics.FromImage(preview)){g.Clear(Color.White);g.FillRectangle(Brushes.Black,0,80,400,80);for(int i=0;i<5;i++)using(var icon=app.icons[i].ToBitmap()){g.DrawImage(icon,i*80+8,8,64,64);g.DrawImage(icon,i*80+8,88,64,64);}preview.Save(Path.Combine(DataRoot,"icon-preview.png"));app.quitting=true;app.Close();}return;}
   if(args.Length>0&&args[0]=="--insights-ui-test"){InsightsUiTest();return;}
   if(args.Length>0&&args[0]=="--token-test-ui"){TokenTestWindow.Test();return;}
   if(args.Length>0&&args[0]=="--usage-scan"){
@@ -451,4 +435,3 @@ partial class QwenStatus : Form {
   }
  }
 }
-

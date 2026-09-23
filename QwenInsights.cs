@@ -37,22 +37,20 @@ partial class QwenStatus {
   internal readonly Label state=new Label();readonly Label detail=new Label(),gpu=new Label();
   bool closing;
   public MiniWindow(){
-   Text="Qwen 작은 상태창";ClientSize=new Size(390,160);MinimumSize=MaximumSize=new Size(406,199);Font=new Font("Malgun Gothic",9);BackColor=Color.FromArgb(8,9,9);ForeColor=Color.FromArgb(239,241,239);
+   Text="Qwen 작은 상태창";ClientSize=new Size(360,150);MinimumSize=MaximumSize=new Size(376,189);Font=new Font("Malgun Gothic",9);BackColor=Color.FromArgb(248,250,253);
    FormBorderStyle=FormBorderStyle.FixedToolWindow;ShowInTaskbar=false;TopMost=true;
    var area=Screen.PrimaryScreen.WorkingArea;Location=new Point(area.Right-Width-18,area.Bottom-Height-18);StartPosition=FormStartPosition.Manual;
-   Paint+=(s,e)=>{using(var pen=new Pen(Color.FromArgb(106,111,106),1))e.Graphics.DrawRectangle(pen,0,0,ClientSize.Width-1,ClientSize.Height-1);};
-   Controls.Add(new Label{Text="QWEN  /  LIVE",Bounds=new Rectangle(16,10,260,20),ForeColor=Color.FromArgb(169,213,180),Font=new Font("Consolas",9,FontStyle.Bold)});
-   state.Bounds=new Rectangle(16,36,357,36);state.Font=new Font(Font.FontFamily,16,FontStyle.Bold);Controls.Add(state);
-   detail.Bounds=new Rectangle(17,80,357,34);detail.ForeColor=ForeColor;Controls.Add(detail);
-   gpu.Bounds=new Rectangle(17,116,260,28);gpu.ForeColor=Color.FromArgb(161,169,161);Controls.Add(gpu);
-   var pin=new CheckBox{Text="항상 위",Checked=true,Bounds=new Rectangle(270,128,110,22),ForeColor=Color.FromArgb(161,169,161)};pin.CheckedChanged+=(s,e)=>TopMost=pin.Checked;Controls.Add(pin);
+   state.Bounds=new Rectangle(16,12,325,32);state.Font=new Font(Font.FontFamily,15,FontStyle.Bold);Controls.Add(state);
+   detail.Bounds=new Rectangle(17,55,325,38);Controls.Add(detail);
+   gpu.Bounds=new Rectangle(17,100,325,28);gpu.ForeColor=Color.DimGray;Controls.Add(gpu);
+   var pin=new CheckBox{Text="항상 위",Checked=true,Bounds=new Rectangle(260,128,95,22)};pin.CheckedChanged+=(s,e)=>TopMost=pin.Checked;Controls.Add(pin);
    FormClosing+=(s,e)=>{if(!closing&&e.CloseReason==CloseReason.UserClosing){e.Cancel=true;Hide();}};
   }
   public void Shutdown(){closing=true;Close();}
   public void UpdateState(int status,string backend,double speed,double running,double waiting,string gpuText){
    string[] names={"꺼짐","준비 중","대기","작업 중","상태 확인 필요"};
    status=Math.Max(0,Math.Min(4,status));state.Text=names[status]+" · "+backend;
-   state.ForeColor=new[]{Color.FromArgb(177,191,205),Color.FromArgb(114,172,255),Color.FromArgb(169,213,180),Color.FromArgb(255,178,80),Color.FromArgb(255,112,112)}[status];
+   state.ForeColor=new[]{Color.SlateGray,Color.RoyalBlue,Color.SeaGreen,Color.DarkOrange,Color.Firebrick}[status];
    string rate=double.IsNaN(speed)?"속도 측정 대기":speed.ToString("0.0")+" tok/s";
    detail.Text=string.Format("{0}  ·  처리 {1:0}건 / 대기 {2:0}건",rate,double.IsNaN(running)?0:running,double.IsNaN(waiting)?0:waiting);
    gpu.Text=gpuText;
@@ -62,7 +60,6 @@ partial class QwenStatus {
  partial class InsightsWindow : Form {
   readonly QwenStatus owner;
   internal readonly TabControl tabs=new TabControl();
-  readonly TreeView navigation=new TreeView();
   readonly ComboBox recent=new ComboBox(),benchmarkBackend=new ComboBox();
   readonly Panel timeline=new Panel();
   readonly Label timelineSummary=new Label(),comparisonNote=new Label(),usageSummary=new Label();
@@ -73,18 +70,12 @@ partial class QwenStatus {
   readonly string benchmarkIndex=Path.Combine(DataRoot,"benchmark-index.json");
   string timelinePath;
   public InsightsWindow(QwenStatus app){
-   owner=app;Text="Qwen 분석 센터";ClientSize=new Size(1060,700);MinimumSize=new Size(830,580);Font=new Font("Malgun Gothic",9);BackColor=Color.FromArgb(245,247,250);
-   var sidebar=new Panel{Dock=DockStyle.Left,Width=200,BackColor=Color.FromArgb(8,9,9),Padding=new Padding(12,14,8,12)};Controls.Add(sidebar);
-   var brand=new Label{Text="QWEN  /  INSIGHTS",Dock=DockStyle.Top,Height=42,ForeColor=Color.FromArgb(239,241,239),Font=new Font("Consolas",10,FontStyle.Bold)};sidebar.Controls.Add(brand);
-   navigation.Dock=DockStyle.Fill;navigation.BorderStyle=BorderStyle.None;navigation.BackColor=sidebar.BackColor;navigation.ForeColor=Color.FromArgb(232,241,249);navigation.Font=new Font("Malgun Gothic",10);navigation.HideSelection=false;navigation.ShowLines=false;navigation.ShowPlusMinus=false;navigation.ShowRootLines=false;navigation.ItemHeight=30;navigation.DrawMode=TreeViewDrawMode.OwnerDrawText;
-   navigation.DrawNode+=(s,e)=>{bool chosen=navigation.SelectedNode==e.Node;var bounds=new Rectangle(0,e.Bounds.Top,navigation.ClientSize.Width,e.Bounds.Height);using(var fill=new SolidBrush(chosen?Color.FromArgb(26,28,26):sidebar.BackColor))e.Graphics.FillRectangle(fill,bounds);using(var brush=new SolidBrush(chosen?Color.FromArgb(169,213,180):e.Node.Parent==null?Color.FromArgb(161,169,161):Color.FromArgb(239,241,239)))e.Graphics.DrawString(e.Node.Text,e.Node.NodeFont??navigation.Font,brush,e.Bounds.Left,e.Bounds.Top+5);if(chosen)using(var pen=new Pen(Color.FromArgb(106,111,106),1))e.Graphics.DrawRectangle(pen,bounds.Left,bounds.Top,bounds.Width-1,bounds.Height-1);};sidebar.Controls.Add(navigation);navigation.BringToFront();
-   tabs.Dock=DockStyle.Fill;tabs.Appearance=TabAppearance.FlatButtons;tabs.SizeMode=TabSizeMode.Fixed;tabs.ItemSize=new Size(0,1);tabs.Multiline=true;tabs.Padding=new Point(0,0);Controls.Add(tabs);tabs.BringToFront();
+   owner=app;Text="Qwen 분석 센터";ClientSize=new Size(920,650);MinimumSize=new Size(760,560);Font=new Font("Malgun Gothic",9);BackColor=Color.FromArgb(245,247,250);
+   tabs.Dock=DockStyle.Fill;tabs.Padding=new Point(16,8);Controls.Add(tabs);
    BuildTimeline();BuildDiagnostics();BuildBenchmarks();BuildSources();BuildCard();BuildOperations();BuildTrends();
-   AddNavigation("현황",new[]{5,0,3});AddNavigation("성능",new[]{9,7,2});AddNavigation("관리",new[]{1,6,8,4});navigation.ExpandAll();navigation.AfterSelect+=(s,e)=>{if(e.Node.Tag is int)tabs.SelectedIndex=(int)e.Node.Tag;};navigation.SelectedNode=navigation.Nodes[0].Nodes[0];
    LoadBenchmarks();ReloadTimeline();RefreshUsage();
    tabs.SelectedIndexChanged+=(s,e)=>{if(tabs.SelectedIndex==1)ReloadDiagnostics();if(tabs.SelectedIndex==3)RefreshUsage();if(tabs.SelectedIndex==4)RefreshCard();if(tabs.SelectedIndex==5)ReloadQueue();if(tabs.SelectedIndex==6)RefreshArchiveSources();if(tabs.SelectedIndex==7)RefreshEnergy();if(tabs.SelectedIndex==9)ReloadTrends();};
   }
-  void AddNavigation(string category,int[] pages){var group=navigation.Nodes.Add(category);group.NodeFont=new Font(Font.FontFamily,9,FontStyle.Bold);foreach(int index in pages){var item=group.Nodes.Add(tabs.TabPages[index].Text);item.Tag=index;}}
   static TabPage Page(string title){return new TabPage(title){BackColor=Color.FromArgb(245,247,250),Padding=new Padding(16)};}
   static Button ActionButton(string title){return new Button{Text=title,AutoSize=true,Height=34,Margin=new Padding(0,0,10,0)};}
   static Label Hint(string text){return new Label{Text=text,Dock=DockStyle.Top,Height=44,ForeColor=Color.DimGray};}
@@ -310,9 +301,8 @@ partial class QwenStatus {
   Directory.CreateDirectory(DataRoot);
   string fixtureDir=Path.Combine(Path.GetTempPath(),"qwen-insights-ui-"+Guid.NewGuid());Directory.CreateDirectory(fixtureDir);
   try{File.WriteAllText(Path.Combine(fixtureDir,Guid.NewGuid()+".json"),"{\"source\":\"direct-chat\",\"created_at\":\""+DateTimeOffset.Now.ToString("o")+"\",\"usage\":{\"prompt_tokens\":1200,\"completion_tokens\":320},\"generation_seconds\":8}");
-   using(var app=new QwenStatus()){
-    app.timer.Stop();
-    app.usageLedger=UsageLedger.Scan(fixtureDir);
+  using(var app=new QwenStatus()){
+   app.timer.Stop();app.usageLedger=UsageLedger.Scan(fixtureDir);
    app.OpenInsights();Application.DoEvents();
    if(app.insightsWindow==null||app.insightsWindow.tabs.TabPages.Count!=10)throw new Exception("Analysis tabs not created");
    using(var image=new Bitmap(app.insightsWindow.Width,app.insightsWindow.Height)){app.insightsWindow.DrawToBitmap(image,new Rectangle(0,0,image.Width,image.Height));image.Save(Path.Combine(DataRoot,"insights-ui-preview.png"));}
