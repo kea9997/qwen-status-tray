@@ -51,14 +51,19 @@ partial class QwenStatus : Form {
  JobWatcher[] jobWatchers; Task<string> initialJobScan; bool jobRescanRequested,usageRescanRequested;
  readonly ConcurrentQueue<string> dirtyUsage=new ConcurrentQueue<string>(); Task<UsageLedger> usageScan; UsageLedger usageLedger; UsageWindow usageWindow;
  sealed class ApiPricing {
-  internal const string SourceUrl="https://www.alibabacloud.com/help/en/model-studio/qwen3-8-27b";
+  internal const string SourceUrl="https://developers.openai.com/api/docs/models/gpt-6.1-sol";
+  internal const decimal MinUsdToKrw=0.0001m,MaxUsdToKrw=1000000m;
   internal static readonly string FilePath=Path.Combine(DataRoot,"api-price.json");
   internal static ApiPricing Current=Load(FilePath);
-  internal decimal InputRate=0.50m,OutputRate=3.00m;
+  internal decimal InputRate=2.00m,OutputRate=10.00m,UsdToKrw=1325m;
+  internal string ReferenceName {get{return InputRate==2m&&OutputRate==10m?"GPT-6.1 Sol Standard":"사용자 설정 API 비교";}}
   internal decimal InputCost(long tokens){return tokens*InputRate/1000000m;}
   internal decimal OutputCost(long tokens){return tokens*OutputRate/1000000m;}
   internal decimal TotalCost(long input,long output){return InputCost(input)+OutputCost(output);}
-  internal static string Money(decimal value){return "$"+value.ToString(value<0.01m?"0.000000":"0.0000",CultureInfo.InvariantCulture);}
+  internal decimal Krw(decimal usd){return usd*UsdToKrw;}
+  internal string Money(decimal usd){return Won(Krw(usd));}
+  internal static string Won(decimal value){return value>0&&value<0.000001m?"<0.000001원":value.ToString(value>=1m?"#,0.##":"0.######",CultureInfo.InvariantCulture)+"원";}
+  internal string Basis(){return ReferenceName+" · 비캐시 비교\n100만 토큰 · 입력 "+Money(InputRate)+" / 출력 "+Money(OutputRate)+"\n고정 환율 1 USD = "+Won(UsdToKrw);}
   internal static ApiPricing Load(string path){
    var fallback=new ApiPricing();if(!File.Exists(path))return fallback;
    try{
@@ -67,14 +72,16 @@ partial class QwenStatus : Form {
      !decimal.TryParse(Convert.ToString(values["inputPerMillionUsd"],CultureInfo.InvariantCulture),NumberStyles.Float,CultureInfo.InvariantCulture,out input)||
      !decimal.TryParse(Convert.ToString(values["outputPerMillionUsd"],CultureInfo.InvariantCulture),NumberStyles.Float,CultureInfo.InvariantCulture,out output)||
      input<0||output<0||input>1000||output>1000)return fallback;
-    fallback.InputRate=input;fallback.OutputRate=output;
+    fallback.InputRate=input;fallback.OutputRate=output;decimal fx;
+    if(values.ContainsKey("usdToKrw")&&decimal.TryParse(Convert.ToString(values["usdToKrw"],CultureInfo.InvariantCulture),NumberStyles.Float,CultureInfo.InvariantCulture,out fx)&&fx>=MinUsdToKrw&&fx<=MaxUsdToKrw)fallback.UsdToKrw=fx;
    }catch{return new ApiPricing();}
    return fallback;
   }
   internal void Save(string path){
+   if(InputRate<0||OutputRate<0||InputRate>1000||OutputRate>1000||UsdToKrw<MinUsdToKrw||UsdToKrw>MaxUsdToKrw)throw new ArgumentOutOfRangeException("pricing","단가 또는 고정 환율의 허용 범위를 확인하세요.");
    Directory.CreateDirectory(Path.GetDirectoryName(path));string temp=path+"."+Guid.NewGuid().ToString("N")+".tmp";
    try{
-    string json=new JavaScriptSerializer().Serialize(new{inputPerMillionUsd=InputRate,outputPerMillionUsd=OutputRate});
+    string json=new JavaScriptSerializer().Serialize(new{inputPerMillionUsd=InputRate,outputPerMillionUsd=OutputRate,usdToKrw=UsdToKrw});
     File.WriteAllText(temp,json,new System.Text.UTF8Encoding(false));
     if(File.Exists(path))File.Replace(temp,path,null);else File.Move(temp,path);
    }finally{if(File.Exists(temp))File.Delete(temp);}
@@ -132,15 +139,15 @@ partial class QwenStatus : Form {
    period.Bounds=new Rectangle(26,171,660,26);period.ForeColor=Color.DimGray;Controls.Add(period);
    Controls.Add(new Label{Text="최근 7일 · 하루 총 처리 토큰",Bounds=new Rectangle(26,212,660,25),Font=new Font("Malgun Gothic",11,FontStyle.Bold)});
    chart.Bounds=new Rectangle(24,242,672,195);chart.BackColor=Color.White;chart.BorderStyle=BorderStyle.FixedSingle;chart.Paint+=(s,e)=>DrawChart(e.Graphics);Controls.Add(chart);
-   today.Bounds=new Rectangle(26,451,660,38);today.ForeColor=Color.DimGray;Controls.Add(today);
+   today.Bounds=new Rectangle(26,451,660,44);today.ForeColor=Color.DimGray;Controls.Add(today);
    UpdateStats(null);
   }
   public void UpdateStats(UsageLedger data){ledger=data;if(data==null){total.Text="계산 중…";detail.Text="저장된 요청 기록을 읽고 있습니다.";period.Text="";today.Text="";}else if(data.Error!=null){total.Text="기록 확인 필요";detail.Text=data.Error;period.Text="";today.Text="";}else{
     total.Text=string.Format("{0:N0} 토큰",data.Input+data.Output);
     var price=ApiPricing.Current;
-    detail.Text=string.Format("입력 {0:N0}   +   출력 {1:N0}   ·   사용량 기록 {2:N0}건\nAPI 환산 {3} (입력 {4} + 출력 {5})",data.Input,data.Output,data.Count,ApiPricing.Money(price.TotalCost(data.Input,data.Output)),ApiPricing.Money(price.InputCost(data.Input)),ApiPricing.Money(price.OutputCost(data.Output)));
+    detail.Text=string.Format("입력 {0:N0}   +   출력 {1:N0}   ·   사용량 기록 {2:N0}건\nAPI 환산 {3} (입력 {4} + 출력 {5})",data.Input,data.Output,data.Count,price.Money(price.TotalCost(data.Input,data.Output)),price.Money(price.InputCost(data.Input)),price.Money(price.OutputCost(data.Output)));
     period.Text="공통 대기열 기록 기간: "+(data.FirstDay==DateTime.MaxValue?"기록 없음":data.FirstDay.ToString("yyyy-MM-dd"))+"부터 · 토큰 테스트 포함"+(data.Unreadable>0?" · 읽기 실패 "+data.Unreadable+"건":"");
-    today.Text=string.Format("오늘 {0:N0} 토큰  ·  Qwen 처리량이며 OpenAI 토큰 절약량은 아닙니다.",data.DayTotal(DateTime.Today));
+    today.Text=string.Format("오늘 {0:N0} 토큰 · 로컬 Qwen 처리량 / 실제 절약액 아님\n{1} · 고정 환율 1 USD = {2}",data.DayTotal(DateTime.Today),price.ReferenceName,ApiPricing.Won(price.UsdToKrw));
    }chart.Invalidate();
   }
   void DrawChart(Graphics g){g.Clear(Color.White);if(ledger==null)return;long[] values=new long[7];long max=1;for(int i=0;i<7;i++){values[i]=ledger.DayTotal(DateTime.Today.AddDays(i-6));max=Math.Max(max,values[i]);}
@@ -150,20 +157,40 @@ partial class QwenStatus : Form {
   }
  }
  class PriceSettingsWindow : Form {
-  readonly NumericUpDown input=new NumericUpDown(),output=new NumericUpDown();
+  readonly NumericUpDown input=new NumericUpDown(),output=new NumericUpDown(),fx=new NumericUpDown();readonly Label wonSummary=new Label();
+  ApiPricing Selected(){return new ApiPricing{InputRate=input.Value,OutputRate=output.Value,UsdToKrw=fx.Value};}
   public PriceSettingsWindow(){
-   Text="API 비교 단가";ClientSize=new Size(560,280);MinimumSize=MaximumSize=new Size(576,319);Font=new Font("Malgun Gothic",10);BackColor=Color.FromArgb(245,247,250);FormBorderStyle=FormBorderStyle.FixedDialog;MaximizeBox=false;MinimizeBox=false;StartPosition=FormStartPosition.CenterParent;
-   Controls.Add(new Label{Text="Qwen3.8-27B API 기준",Bounds=new Rectangle(22,18,520,31),Font=new Font("Malgun Gothic",15,FontStyle.Bold)});
-   Controls.Add(new Label{Text="입력 100만 토큰당 (USD)",Bounds=new Rectangle(24,68,280,25)});
-   Controls.Add(new Label{Text="출력 100만 토큰당 (USD)",Bounds=new Rectangle(24,111,280,25)});
-   input.Bounds=new Rectangle(330,64,192,30);output.Bounds=new Rectangle(330,107,192,30);
+   Text="API 비교 단가";ClientSize=new Size(600,510);MinimumSize=MaximumSize=new Size(616,549);Font=new Font("Malgun Gothic",10);BackColor=Color.FromArgb(245,247,250);FormBorderStyle=FormBorderStyle.FixedDialog;MaximizeBox=false;MinimizeBox=false;StartPosition=FormStartPosition.CenterParent;
+   Controls.Add(new Label{Text="API 비교 단가 · 원화 표시",Bounds=new Rectangle(22,18,552,32),Font=new Font("Malgun Gothic",15,FontStyle.Bold)});
+   Controls.Add(new Label{Text="기본 참고: GPT-6.1 Sol Standard · 비캐시 · 272K 이하",Bounds=new Rectangle(24,55,552,25)});
+   Controls.Add(new Label{Text="입력 · 100만 토큰당 USD",Bounds=new Rectangle(24,94,320,25)});
+   Controls.Add(new Label{Text="출력 · 100만 토큰당 USD",Bounds=new Rectangle(24,136,320,25)});
+   Controls.Add(new Label{Text="고정 환율 · 1 USD당 KRW",Bounds=new Rectangle(24,178,320,25)});
+   input.Bounds=new Rectangle(356,90,220,30);output.Bounds=new Rectangle(356,132,220,30);fx.Bounds=new Rectangle(356,174,220,30);
    foreach(var box in new[]{input,output}){box.Minimum=0;box.Maximum=1000;box.DecimalPlaces=4;box.Increment=0.05m;box.TextAlign=HorizontalAlignment.Right;Controls.Add(box);}
-   input.Value=ApiPricing.Current.InputRate;output.Value=ApiPricing.Current.OutputRate;
-   var source=new LinkLabel{Text="기본값: Alibaba Cloud Model Studio · 싱가포르 국제 요금표",Bounds=new Rectangle(24,153,510,25)};
+   fx.DecimalPlaces=4;fx.Minimum=ApiPricing.MinUsdToKrw;fx.Maximum=ApiPricing.MaxUsdToKrw;fx.Increment=1;fx.ThousandsSeparator=true;fx.TextAlign=HorizontalAlignment.Right;Controls.Add(fx);
+   input.Value=ApiPricing.Current.InputRate;output.Value=ApiPricing.Current.OutputRate;fx.Value=ApiPricing.Current.UsdToKrw;
+   wonSummary.Bounds=new Rectangle(24,218,552,76);wonSummary.ForeColor=Color.FromArgb(37,89,182);Controls.Add(wonSummary);
+   foreach(var box in new[]{input,output,fx})box.ValueChanged+=(s,e)=>wonSummary.Text=Selected().Basis();wonSummary.Text=Selected().Basis();
+   Controls.Add(new Label{Text="환율은 사용자 고정값입니다(기본 1,325원). 실시간 환율이 아닙니다.",Bounds=new Rectangle(24,300,552,44),ForeColor=Color.DimGray});
+   var source=new LinkLabel{Text="OpenAI 기본 단가 출처 · 확인 2026-10-24",Bounds=new Rectangle(24,350,552,25)};
    source.LinkClicked+=(s,e)=>{try{Process.Start(new ProcessStartInfo(ApiPricing.SourceUrl){UseShellExecute=true});}catch(Exception ex){MessageBox.Show(ex.Message,"가격표 열기 실패");}};Controls.Add(source);
-   Controls.Add(new Label{Text="추정 비교액입니다. 할인·캐시·전기요금·GPU 비용은 반영하지 않습니다.",Bounds=new Rectangle(24,185,510,28),ForeColor=Color.DimGray});
-   var save=new Button{Text="저장",Bounds=new Rectangle(310,226,100,34)};save.Click+=(s,e)=>{try{var selected=new ApiPricing{InputRate=input.Value,OutputRate=output.Value};selected.Save(ApiPricing.FilePath);ApiPricing.Current=selected;DialogResult=DialogResult.OK;Close();}catch(Exception ex){MessageBox.Show("단가를 저장하지 못했습니다: "+ex.Message,"Qwen");}};Controls.Add(save);
-   var cancel=new Button{Text="취소",Bounds=new Rectangle(422,226,100,34),DialogResult=DialogResult.Cancel};Controls.Add(cancel);AcceptButton=save;CancelButton=cancel;
+   Controls.Add(new Label{Text="비캐시 Standard 참고 비교 · 실제 청구·구독 절약액 아님\n캐시/쓰기·추론 과금·도구·티어 할증·세금·전기/장비 제외",Bounds=new Rectangle(24,380,552,66),ForeColor=Color.DimGray});
+   var save=new Button{Text="저장",Bounds=new Rectangle(364,460,100,34)};save.Click+=(s,e)=>{try{var selected=Selected();selected.Save(ApiPricing.FilePath);ApiPricing.Current=selected;DialogResult=DialogResult.OK;Close();}catch(Exception ex){MessageBox.Show("단가를 저장하지 못했습니다: "+ex.Message,"Qwen");}};Controls.Add(save);
+   var cancel=new Button{Text="취소",Bounds=new Rectangle(476,460,100,34),DialogResult=DialogResult.Cancel};Controls.Add(cancel);AcceptButton=save;CancelButton=cancel;
+  }
+  internal static void Test(){
+   var prior=ApiPricing.Current;ApiPricing.Current=new ApiPricing();
+   try{using(var window=new PriceSettingsWindow()){
+    window.Show();Application.DoEvents();
+    if(window.input.Value!=2m||window.output.Value!=10m||window.fx.Value!=1325m||!window.wonSummary.Text.Contains("2,650원")||!window.wonSummary.Text.Contains("13,250원"))throw new Exception("Default KRW price editor incorrect");
+    foreach(bool custom in new[]{false,true}){
+     if(custom){window.input.Value=1000m;window.output.Value=1000m;window.fx.Value=ApiPricing.MaxUsdToKrw;if(!window.wonSummary.Text.Contains("사용자 설정"))throw new Exception("Custom rates falsely labelled official");}
+     foreach(Control control in window.Controls){if(!window.ClientRectangle.Contains(control.Bounds))throw new Exception("Price editor control outside client area");var label=control as Label;if(label!=null&&TextRenderer.MeasureText(label.Text,label.Font,new Size(label.Width,int.MaxValue),TextFormatFlags.WordBreak|TextFormatFlags.TextBoxControl).Height>label.Height)throw new Exception("Price editor label clipped: "+label.Text);}
+     using(var image=new Bitmap(window.Width,window.Height)){window.DrawToBitmap(image,new Rectangle(Point.Empty,image.Size));image.Save(Path.Combine(DataRoot,custom?"price-settings-custom-preview.png":"price-settings-preview.png"));}
+    }
+    window.Close();
+   }}finally{ApiPricing.Current=prior;}
   }
  }
  class ActivityWindow : Form {
@@ -400,7 +427,7 @@ partial class QwenStatus : Form {
  }
  void UpdateUsageText(double serverInput,double serverOutput){
   lastServerInput=serverInput;lastServerOutput=serverOutput;
-  usage.Text=!Directory.Exists(SharedRequests)?"공통 대기열 기록 폴더 미연결":usageLedger==null?"기록 누적 계산 중…":usageLedger.Error!=null?"기록 누적 확인 필요":string.Format("기록 누적 {0:N0} 토큰 · {1:N0}건 · API 환산 {4}\n입력 {2:N0} · 출력 {3:N0}",usageLedger.Input+usageLedger.Output,usageLedger.Count,usageLedger.Input,usageLedger.Output,ApiPricing.Money(ApiPricing.Current.TotalCost(usageLedger.Input,usageLedger.Output)));
+  usage.Text=!Directory.Exists(SharedRequests)?"공통 대기열 기록 폴더 미연결":usageLedger==null?"기록 누적 계산 중…":usageLedger.Error!=null?"기록 누적 확인 필요":string.Format("기록 누적 {0:N0} 토큰 · {1:N0}건 · API 환산 {4}\n입력 {2:N0} · 출력 {3:N0}",usageLedger.Input+usageLedger.Output,usageLedger.Count,usageLedger.Input,usageLedger.Output,ApiPricing.Current.Money(ApiPricing.Current.TotalCost(usageLedger.Input,usageLedger.Output)));
   usage.Text+="\n이번 서버 "+(double.IsNaN(serverInput)||double.IsNaN(serverOutput)?"—":string.Format("{0:N0} 토큰",serverInput+serverOutput));
  }
  async Task Poll(){if(polling)return;polling=true;try{
@@ -486,10 +513,18 @@ partial class QwenStatus : Form {
    var ledger=UsageLedger.Scan(directory);if(ledger.Count!=2||ledger.Input!=300||ledger.Output!=60)throw new Exception("Usage scan failed");
    File.WriteAllText(completed,"{\"status\":\"completed\",\"created_at\":\"2026-09-21T12:00:00Z\",\"usage\":{\"prompt_tokens\":110,\"completion_tokens\":20}}");ledger.AddFile(completed);ledger.AddFile(completed);
    if(ledger.Count!=2||ledger.Input!=310||ledger.Output!=60)throw new Exception("Incremental usage correction failed");
-   var defaultPrice=new ApiPricing();if(defaultPrice.TotalCost(1000000,1000000)!=3.50m||defaultPrice.InputCost(100)!=0.00005m)throw new Exception("API pricing calculation failed");
-   string priceFile=Path.Combine(directory,"api-price.json");var customPrice=new ApiPricing{InputRate=0.25m,OutputRate=2.50m};customPrice.Save(priceFile);
-   var loadedPrice=ApiPricing.Load(priceFile);if(loadedPrice.TotalCost(2000000,1000000)!=3.00m)throw new Exception("Custom API pricing was not persisted");
-   File.WriteAllText(priceFile,"{\"inputPerMillionUsd\":-1,\"outputPerMillionUsd\":3}");if(ApiPricing.Load(priceFile).InputRate!=0.50m)throw new Exception("Invalid API pricing was accepted");
+   var defaultPrice=new ApiPricing();if(defaultPrice.TotalCost(1000000,1000000)!=12m||defaultPrice.InputCost(100)!=0.0002m||defaultPrice.Krw(12m)!=15900m||defaultPrice.Money(12m)!="15,900원"||defaultPrice.Money(defaultPrice.InputCost(1))!="0.00265원"||defaultPrice.Money(0m)!="0원"||!defaultPrice.Money(0.000000000001m).StartsWith("<"))throw new Exception("USD/KRW default or small-amount calculation failed");
+   if(!defaultPrice.Basis().Contains("2,650원")||!defaultPrice.Basis().Contains("13,250원")||!defaultPrice.Basis().Contains("고정 환율"))throw new Exception("Default KRW price basis incorrect");
+   string priceFile=Path.Combine(directory,"api-price.json");var customPrice=new ApiPricing{InputRate=0.25m,OutputRate=2.50m,UsdToKrw=1400.5m};customPrice.Save(priceFile);
+   var loadedPrice=ApiPricing.Load(priceFile);if(loadedPrice.TotalCost(2000000,1000000)!=3m||loadedPrice.UsdToKrw!=1400.5m||loadedPrice.Money(3m)!="4,201.5원"||!loadedPrice.ReferenceName.Contains("사용자 설정"))throw new Exception("Custom USD/FX pricing was not persisted");
+   string savedPrice=File.ReadAllText(priceFile);bool invalidSave=false;try{new ApiPricing{UsdToKrw=0}.Save(priceFile);}catch(ArgumentOutOfRangeException){invalidSave=true;}if(!invalidSave||File.ReadAllText(priceFile)!=savedPrice)throw new Exception("Invalid pricing overwrote saved settings");
+   File.WriteAllText(priceFile,"{\"inputPerMillionUsd\":0.5,\"outputPerMillionUsd\":3}");loadedPrice=ApiPricing.Load(priceFile);if(loadedPrice.InputRate!=0.5m||loadedPrice.OutputRate!=3m||loadedPrice.UsdToKrw!=1325m)throw new Exception("Legacy custom rates were not preserved with default FX");
+   foreach(string invalidFx in new[]{"0","-1","1000001","0.00001","null","true","\"NaN\"","\"Infinity\"","\"1e100\"","\"bad\"","{}"}){
+    File.WriteAllText(priceFile,"{\"inputPerMillionUsd\":0.25,\"outputPerMillionUsd\":2.5,\"usdToKrw\":"+invalidFx+"}");loadedPrice=ApiPricing.Load(priceFile);if(loadedPrice.UsdToKrw!=1325m||loadedPrice.InputRate!=0.25m||loadedPrice.OutputRate!=2.5m)throw new Exception("Invalid FX lost valid legacy rates or was accepted: "+invalidFx);
+   }
+   foreach(string invalidRate in new[]{"-1","1001","null","true","\"NaN\"","\"Infinity\""}){File.WriteAllText(priceFile,"{\"inputPerMillionUsd\":"+invalidRate+",\"outputPerMillionUsd\":3}");loadedPrice=ApiPricing.Load(priceFile);if(loadedPrice.InputRate!=2m||loadedPrice.OutputRate!=10m)throw new Exception("Invalid API pricing was accepted");}
+   File.WriteAllText(priceFile,"{");if(ApiPricing.Load(priceFile).UsdToKrw!=1325m)throw new Exception("Malformed pricing did not fall back safely");
+   PriceSettingsWindow.Test();
    HistoryRecoveryTest(directory);QueueTimeoutTest();
   }finally{Directory.Delete(directory,true);}
  }
@@ -529,7 +564,7 @@ partial class QwenStatus : Form {
     var ledger=UsageLedger.Scan(directory);if(ledger.Count!=2||ledger.Input!=300||ledger.Output!=60||ledger.DayTotal(new DateTime(2026,9,21))!=120)throw new Exception("Historical totals failed");
     File.WriteAllText(a,"{\"status\":\"completed\",\"created_at\":\"2026-09-21T00:00:00+09:00\",\"usage\":{\"prompt_tokens\":110,\"completion_tokens\":20}}");ledger.AddFile(a);ledger.AddFile(a);
     if(ledger.Count!=2||ledger.Input!=310||ledger.Output!=60||ledger.DayTotal(new DateTime(2026,9,21))!=130)throw new Exception("Incremental count or idempotency failed");
-    using(var window=new UsageWindow()){window.UpdateStats(ledger);if(!window.detail.Text.Contains("API 환산"))throw new Exception("Usage cost was not displayed");window.Show();Application.DoEvents();using(var bmp=new Bitmap(window.Width,window.Height)){window.DrawToBitmap(bmp,new Rectangle(0,0,bmp.Width,bmp.Height));bmp.Save(Path.Combine(DataRoot,"usage-preview.png"));}window.Close();}
+    using(var window=new UsageWindow()){window.UpdateStats(ledger);if(!window.detail.Text.Contains("API 환산")||!window.detail.Text.Contains(ApiPricing.Current.Money(ApiPricing.Current.TotalCost(ledger.Input,ledger.Output)))||window.detail.Text.Contains("$"))throw new Exception("KRW usage cost was not displayed");window.Show();Application.DoEvents();using(var bmp=new Bitmap(window.Width,window.Height)){window.DrawToBitmap(bmp,new Rectangle(0,0,bmp.Width,bmp.Height));bmp.Save(Path.Combine(DataRoot,"usage-preview.png"));}window.Close();}
     using(var editor=new PriceSettingsWindow()){editor.Show();Application.DoEvents();using(var bmp=new Bitmap(editor.Width,editor.Height)){editor.DrawToBitmap(bmp,new Rectangle(0,0,bmp.Width,bmp.Height));bmp.Save(Path.Combine(DataRoot,"price-settings-preview.png"));}editor.Close();}
    }finally{foreach(var file in Directory.GetFiles(directory))File.Delete(file);Directory.Delete(directory);}
    File.WriteAllText(Path.Combine(DataRoot,"usage-test.txt"),"PASS: historical totals, incomplete usage, queued exclusion, incremental correction and no double counting");return;
@@ -554,7 +589,7 @@ partial class QwenStatus : Form {
      string next=Path.Combine(directory,Guid.NewGuid().ToString()+".json");File.WriteAllText(next,"{\"status\":\"queued\"}");
      if(!SpinWait.SpinUntil(()=>{lock(app.jobLock)return app.latestJobPath==next;},2000))throw new Exception("Live request detection failed");
     }
-    app.usageLedger=UsageLedger.Scan(directory);app.Display(2,153,190,0,0,0);if(!app.usage.Text.Contains("API 환산"))throw new Exception("Main cost was not displayed");
+    app.usageLedger=UsageLedger.Scan(directory);app.Display(2,153,190,0,0,0);if(!app.usage.Text.Contains("API 환산")||!app.usage.Text.Contains(ApiPricing.Current.Money(ApiPricing.Current.TotalCost(app.usageLedger.Input,app.usageLedger.Output)))||app.usage.Text.Contains("$"))throw new Exception("Main KRW cost was not displayed");
     app.Show();Application.DoEvents();using(var bmp=new Bitmap(app.Width,app.Height)){app.DrawToBitmap(bmp,new Rectangle(0,0,bmp.Width,bmp.Height));bmp.Save(Path.Combine(DataRoot,"status-preview.png"));}
     app.quitting=true;app.Close();
    }}finally{foreach(var file in Directory.GetFiles(directory))File.Delete(file);Directory.Delete(directory);}
