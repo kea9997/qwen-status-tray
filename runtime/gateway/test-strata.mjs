@@ -58,7 +58,14 @@ try{
  assert.throws(()=>readConfig({QWEN_BACKEND:'strata'}),/MODEL_ID/);
  assert.equal(readConfig({QWEN_BACKEND:'strata',QWEN_MODEL_ID:model}).model,model);
  const backendFile=path.join(root,'backend.txt');await fs.writeFile(backendFile,'strata');assert.equal(await readBackend({backendFile}), 'strata');
- assert.equal(chatInputBudget('vllm'),61440);assert.equal(chatInputBudget('ninfer'),225280);assert.equal(chatInputBudget('strata',32768),28672);
+ for(const legacy of ['vllm','ninfer','both']){
+  assert.throws(()=>readConfig({QWEN_BACKEND:legacy,QWEN_MODEL_ID:model}),/Only Strata/);
+  assert.throws(()=>chatInputBudget(legacy,32768),/Unsupported/);
+  await fs.writeFile(backendFile,legacy);await assert.rejects(readBackend({backendFile}),/only strata/);
+  await assert.rejects(countTokens({upstream,backend:legacy,model,messages}),/Unsupported/);
+ }
+ await fs.writeFile(backendFile,'strata');assert.equal(readConfig({QWEN_MODEL_ID:model}).backend,'strata');
+ assert.equal(chatInputBudget('strata',32768),28672);
  assert.throws(()=>chatInputBudget('strata'),/capacity/);
  assert.deepEqual(benchmarkProfiles('strata',32768),['quick','8k','32k']);assert(!benchmarkProfiles('strata',65536).includes('224k'));assert(benchmarkProfiles('strata',262144).includes('224k'));
  const health={service:'strata',loaded:true,model,max_context:32768};

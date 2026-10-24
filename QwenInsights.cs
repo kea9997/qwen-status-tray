@@ -60,7 +60,7 @@ partial class QwenStatus {
  partial class InsightsWindow : Form {
   readonly QwenStatus owner;
   internal readonly TabControl tabs=new TabControl();
-  readonly ComboBox recent=new ComboBox(),benchmarkBackend=new ComboBox();
+  readonly ComboBox recent=new ComboBox();
   readonly Panel timeline=new Panel();
   readonly Label timelineSummary=new Label(),comparisonNote=new Label(),usageSummary=new Label();
   readonly TextBox diagnostics=new TextBox();
@@ -158,8 +158,7 @@ partial class QwenStatus {
    lines.Add("Qwen 서버: "+server);lines.Add("공통 대기열: "+queueHealth);
    if(queueHealth=="HTTP 200")lines.Add("대기열 요청: "+QueueSnapshot());
    lines.Add("선택한 백엔드: "+Backend());lines.Add("요청 기록: "+(Directory.Exists(SharedRequests)?"연결됨":"폴더 없음"));
-   lines.Add("서버 시작 스크립트: "+(File.Exists(Path.Combine(Root,"start.sh"))?"있음":"없음 (수동 실행만 가능)"));
-   lines.Add("서버 종료 스크립트: "+(File.Exists(Path.Combine(Root,"stop.sh"))?"있음":"없음 (수동 종료만 가능)"));
+   lines.Add("서버 제어: "+(Backend()!="strata"?"지원하지 않는 설정 · 설치 도우미에서 Strata 준비":ExternalStrata()?"기존 서버 연결 · 외부 서버 제어 안 함":ManagedInstall()?"관리 Strata · 소유 프로세스만 제어":"네이티브 준비 필요"));
    if(server=="HTTP 200"&&queueHealth!="HTTP 200")lines.Add("\r\n진단: 모델은 살아 있지만 공통 대기열이 준비되지 않았습니다. 대기열 상태를 확인하세요.");
    else if(server!="HTTP 200"&&queueHealth=="HTTP 200")lines.Add("\r\n진단: 대기열은 살아 있지만 모델 서버가 응답하지 않습니다. 모델이 꺼졌거나 준비 중일 수 있습니다.");
    else if(server=="HTTP 200"&&queueHealth=="HTTP 200")lines.Add("\r\n진단: 기본 연결이 정상입니다.");
@@ -169,11 +168,11 @@ partial class QwenStatus {
   }
 
   class BenchRecord {public string Path {get;set;}public string Backend {get;set;}public string Added {get;set;}}
-  public class BenchSummary {public string Profile,Status;public int Runs,RecallPassed,RecallTotal;public double WarmupTtft=double.NaN,MeanTtft=double.NaN,MeanSpeed=double.NaN,MaxInput=double.NaN;}
+  public class BenchSummary {public string Profile,Status,Backend;public int Runs,RecallPassed,RecallTotal;public double WarmupTtft=double.NaN,MeanTtft=double.NaN,MeanSpeed=double.NaN,MaxInput=double.NaN;}
   void BuildBenchmarks(){
-   var page=Page("백엔드 비교");tabs.TabPages.Add(page);
+   var page=Page("실행 결과 비교");tabs.TabPages.Add(page);
    var bar=new FlowLayoutPanel{Dock=DockStyle.Top,Height=42};page.Controls.Add(bar);
-   benchmarkBackend.DropDownStyle=ComboBoxStyle.DropDownList;benchmarkBackend.Width=110;benchmarkBackend.Items.AddRange(new object[]{"vLLM","ninfer","strata"});benchmarkBackend.SelectedItem=Backend();bar.Controls.Add(benchmarkBackend);
+   bar.Controls.Add(new Label{Text="Strata FN",AutoSize=true,Margin=new Padding(3,9,12,3)});
    var test=ActionButton("토큰 테스트 열기");test.Click+=(s,e)=>{if(owner!=null)owner.OpenTokenTest();};bar.Controls.Add(test);
    var add=ActionButton("최근 테스트 결과 등록");add.Click+=(s,e)=>AddLatestBenchmark();bar.Controls.Add(add);
    var remove=ActionButton("선택 기록 제거");remove.Click+=(s,e)=>RemoveBenchmark();bar.Controls.Add(remove);
@@ -193,7 +192,7 @@ partial class QwenStatus {
    if(!Directory.Exists(directory)){MessageBox.Show("토큰 테스트 결과 폴더가 없습니다. 먼저 토큰 테스트를 실행하세요.","Qwen");return;}
    var file=new DirectoryInfo(directory).GetFiles("*.json").OrderByDescending(x=>x.LastWriteTimeUtc).FirstOrDefault();
    if(file==null){MessageBox.Show("등록할 JSON 결과가 없습니다.","Qwen");return;}
-   try{var summary=ReadBenchmark(file.FullName);string backend=benchmarkBackend.SelectedItem.ToString();
+   try{var summary=ReadBenchmark(file.FullName);string backend=string.IsNullOrEmpty(summary.Backend)?"미기록":summary.Backend;
     if(benchmarkRecords.Any(x=>string.Equals(x.Path,file.FullName,StringComparison.OrdinalIgnoreCase))){MessageBox.Show("이 결과는 이미 등록되어 있습니다.","Qwen");return;}
     var answer=MessageBox.Show(string.Format("{0}\n{1} · {2} · 측정 {3}회\n\n이 결과를 {4} 기록으로 등록할까요?",file.Name,file.LastWriteTime.ToString("g"),summary.Profile,summary.Runs,backend),"토큰 테스트 결과 등록",MessageBoxButtons.YesNo);
     if(answer!=DialogResult.Yes)return;
@@ -202,16 +201,16 @@ partial class QwenStatus {
   }
   void RemoveBenchmark(){var row=benchmarks.SelectedItems.Count>0?benchmarks.SelectedItems[0]:null;if(row==null)return;var record=row.Tag as BenchRecord;if(record==null)return;benchmarkRecords.Remove(record);SaveBenchmarks();RefreshBenchmarks();}
   void RefreshBenchmarks(){
-   benchmarks.BeginUpdate();benchmarks.Items.Clear();int missing=0;var profiles=new HashSet<string>();var backends=new HashSet<string>();
+   benchmarks.BeginUpdate();benchmarks.Items.Clear();int missing=0;var profiles=new HashSet<string>();
    foreach(var record in benchmarkRecords.OrderByDescending(x=>x.Added)){
     if(!File.Exists(record.Path)){missing++;continue;}
-    try{var s=ReadBenchmark(record.Path);profiles.Add(s.Profile);backends.Add(record.Backend);
+    try{var s=ReadBenchmark(record.Path);profiles.Add(s.Profile);
      var row=new ListViewItem(new[]{record.Added,record.Backend,s.Profile,BenchNumber(s.WarmupTtft,"초"),BenchNumber(s.MeanTtft,"초"),BenchNumber(s.MeanSpeed," tok/s"),double.IsNaN(s.MaxInput)?"—":s.MaxInput.ToString("N0"),s.Status});row.Tag=record;benchmarks.Items.Add(row);
     }catch{missing++;}
    }
    benchmarks.EndUpdate();
    comparisonNote.Text=benchmarkRecords.Count==0?"서버를 수동으로 켜고 같은 프로필을 각각 테스트한 뒤 결과를 등록하세요. 워밍업은 실제 콜드 스타트를 보장하지 않습니다.":
-    string.Format("등록 {0}건 · 표시 {1}건{2}. {3}\n입력 길이·모델·서버 설정과 프로필이 같아야 공정하게 비교할 수 있습니다. 워밍업은 콜드 스타트 보장이 아닙니다.",benchmarkRecords.Count,benchmarks.Items.Count,missing>0?" · 결과 파일 없음/손상 "+missing+"건":"",backends.Count>=2&&profiles.Count==1?"두 백엔드의 같은 프로필이 있습니다.":"조건을 맞춘 두 백엔드 기록이 필요합니다.");
+    string.Format("등록 {0}건 · 표시 {1}건{2}. {3}\n입력 길이·모델·서버 설정과 프로필이 같아야 공정하게 비교할 수 있습니다. 워밍업은 콜드 스타트 보장이 아닙니다.",benchmarkRecords.Count,benchmarks.Items.Count,missing>0?" · 결과 파일 없음/손상 "+missing+"건":"",benchmarks.Items.Count>=2&&profiles.Count==1?"같은 검사 프로필의 결과가 있습니다.":"조건을 맞춘 같은 프로필 결과 두 개가 필요합니다.");
   }
   static string BenchNumber(double value,string suffix){return double.IsNaN(value)?"—":value.ToString("0.0")+suffix;}
   static double Value(Dictionary<string,object> data,string key){return Number(data,key);}
@@ -219,7 +218,7 @@ partial class QwenStatus {
    var d=new JavaScriptSerializer{MaxJsonLength=16*1024*1024}.Deserialize<Dictionary<string,object>>(File.ReadAllText(path));
    if(!d.ContainsKey("rows"))throw new InvalidDataException("rows 필드가 없습니다.");
    var rows=d["rows"] as IEnumerable;if(rows==null)throw new InvalidDataException("rows 형식이 잘못됐습니다.");
-   var s=new BenchSummary{Profile=Field(d,"profile"),Status=Field(d,"status")};double ttft=0,speed=0;int ttftCount=0,speedCount=0;
+   var s=new BenchSummary{Profile=Field(d,"profile"),Status=Field(d,"status"),Backend=Field(d,"backend")};double ttft=0,speed=0;int ttftCount=0,speedCount=0;
    foreach(var item in rows){var row=item as Dictionary<string,object>;if(row==null||Field(row,"status")!="completed")continue;
     bool warm=row.ContainsKey("warmup")&&Convert.ToBoolean(row["warmup"]);double t=Value(row,"ttft_seconds"),v=Value(row,"decode_tok_s"),input=Value(row,"input_tokens");
     if(!double.IsNaN(input)&&(double.IsNaN(s.MaxInput)||input>s.MaxInput))s.MaxInput=input;

@@ -1,12 +1,12 @@
-// Bound multimodal requests and keep binary image data out of monitor logs.
+// Refuse unsupported media and keep binary image data out of monitor logs.
 export function inspectMedia(messages) {
  let images=0, videos=0;
  for (const m of messages) for (const p of Array.isArray(m.content)?m.content:[]) {
   if(p.type==='image_url') images++;
   if(p.type==='video_url'||p.type==='input_video') videos++;
  }
- if(videos) throw Error('동영상 직접 입력은 아직 검증되지 않았습니다. 우선 화면을 사진 한 장으로 보내주세요.');
- if(images>1) throw Error('현재 사진은 대화 문맥 전체에서 한 장만 지원합니다. /new로 새 대화를 시작한 뒤 사진 한 장을 보내주세요.');
+ if(videos) throw Error('Strata 게이트웨이는 텍스트·도구 호출 전용입니다. 동영상 입력은 지원하지 않습니다.');
+ if(images>1) throw Error('Strata 게이트웨이는 텍스트·도구 호출 전용입니다. 이미지 입력은 지원하지 않습니다.');
  return {images};
 }
 export function logMessages(messages) {

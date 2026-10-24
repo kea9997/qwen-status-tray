@@ -16,14 +16,10 @@ jobs:
       - name: Check portable runtime and install plans
         shell: pwsh
         run: |
-          node --test runtime/gateway/test-*.mjs runtime/worker/test-*.mjs
-          if ($LASTEXITCODE -ne 0) { throw "Runtime tests failed" }
+          & ./setup/runtime-tests.ps1
           & ./setup/setup-tests.ps1
-          & ./setup/backend-tests.ps1
           & ./setup/strata-tests.ps1
           & ./setup/strata-attach-tests.ps1
-          python ./setup/backend-prepare-tests.py
-          if ($LASTEXITCODE -ne 0) { throw "Backend preparation tests failed" }
       - name: Build Windows app
         shell: cmd
         run: build.cmd

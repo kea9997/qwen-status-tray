@@ -1,115 +1,99 @@
-# Portable Qwen runtime
+# Portable Strata FN runtime
 
-Node.js 22 or newer is required. These ES modules use only Node built-ins; there is no npm install step. The gateway listens only on `127.0.0.1`. Queue and upstream overrides accept HTTP loopback origins only (no remote URL, credentials or URL path).
+Node.js 22+ is required. These ES modules use Node built-ins only; no npm install is needed. The gateway binds only to `127.0.0.1`. Upstream/queue overrides accept HTTP loopback origins, without credentials, paths, queries or redirects.
 
-The gateway, MCP worker and benchmark **never install, start, restart or stop a model server**. An operator must start the selected model backend separately. A stopped backend produces an unavailable response. Starting the queue alone does not load a model.
+**Strata is the only supported engine.** Unsupported environment/backend-file selections fail explicitly; no engine detection, legacy dispatch, model substitution or installation migration occurs. Historical request/benchmark labels remain readable. The gateway, worker and benchmark never install, start, restart or stop a model. Starting the queue alone does not load one.
 
-## Strata FN first
+## Setup and identity
 
-The primary Windows path is Strata FN (SC117 Qwen3.8 Flash Next IQ3_XXS / IQ2_XS). Attach an existing loopback server without controlling its lifecycle, or use `setup/strata-install.ps1` to validate **already installed** pinned source 0.2.3.1, dedicated Python/CUDA dependencies, official engine 0.1.48 and prepared SC117 GGUF/pack/tokenizer/MTP configuration. This is not automatic engine/model acquisition or a verified fresh-GPU installation. See [INSTALL](../INSTALL.md). Legacy vLLM/ninfer paths remain available.
+Attach an existing loopback Strata server without controlling it, or validate already installed pinned Strata 0.2.3.1 source, dedicated Python/CUDA dependencies, official engine 0.1.48 and prepared SC117 IQ3_XXS/IQ2_XS GGUF/pack/tokenizer/MTP configuration. This is not automatic engine/model acquisition or a verified fresh-GPU installation. See [INSTALL](../INSTALL.md) and [pinned inputs](../setup/backends.json).
 
-For Strata, set `QWEN_BACKEND=strata`, an explicit `QWEN_UPSTREAM_URL` and the exact `QWEN_MODEL_ID` discovered by setup. Setup persists the effective context (minimum of `/health.max_context` and matching `/v1/models` `meta.n_ctx`) in its receipt and launches the gateway with `QWEN_CONTEXT_TOKENS`. The runtime requires `service=strata`, a matching model, boolean `loaded` and a valid reported or explicitly verified context. Reachable but unloaded is not ready. A foreign service or wrong model is unavailable, never silently treated as vLLM.
+The exact `QWEN_MODEL_ID` is required. Setup discovers/persists the effective context (minimum of health `max_context` and matching models `meta.n_ctx`) and passes `QWEN_CONTEXT_TOKENS`. Runtime requires `service=strata`, a matching model, boolean `loaded` and reported or explicitly verified capacity. Unloaded is reachable but not ready. No default 27B identity/context is substituted for Flash Next.
 
-**The Strata gateway path is text/tools only**, even if the upstream advertises images. Capabilities remain `vision_ready:false`; image requests receive a clear 400 before counting or generation. Pinned source has no `/tokenize`: a 404 triggers conversion of text/tool messages to `/v1/messages/count_tokens`. Tool-use IDs and JSON arguments are preserved. No image-counting or lossless multimodal compatibility is claimed; legacy media behavior is unchanged.
+**Text and tool calls only**, even if upstream advertises images. Capabilities always report `vision_ready:false`. Images are rejected before token counting/generation. A 404 from `/tokenize` triggers text/tool conversion to `/v1/messages/count_tokens`, preserving tool IDs and JSON arguments. Image counting/multimodal forwarding is not supported.
 
-Strata JSON `/metrics` is exposed as normalized `GET /status` (native rates/context/totals) and a narrow Prometheus compatibility `GET /metrics`. Missing rates, KV and GPU gauges remain absent/null, not invented zero values. Upstream failure/malformed metrics returns a bounded non-200 error before headers are committed. Strata chat reserves at least 4,096 output tokens within actual context; benchmark profiles are filtered to those that fit (including 224k only at sufficient capacity). None run automatically.
+JSON `/metrics` is normalized as `GET /status` and a narrow Prometheus compatibility `GET /metrics`. The compatibility metric prefix is retained for existing consumers; it is not selectable engine support. Missing rates/KV/GPU gauges stay absent/null. Failed/malformed metrics return a bounded non-200 response. Generation/tool SSE is forwarded unchanged, with usage/timings recorded.
 
-Example for an already running server (replace model/address with verified values; this only starts the queue):
+Example for an already running server; replace model/address/context with verified values. This starts only a queue:
 
 ```powershell
 $env:QWEN_BACKEND='strata'
 $env:QWEN_UPSTREAM_URL='http://127.0.0.1:8088'
 $env:QWEN_MODEL_ID='qwen3.8-flash-next-sc117-uncensored-iq3_xxs'
-$env:QWEN_CONTEXT_TOKENS='262144' # only if verified for this server
+$env:QWEN_CONTEXT_TOKENS='262144' # only when verified for this server
 node runtime/gateway/gateway.mjs
 ```
 
 ## Configuration
 
-Set these environment variables in the launcher environment. All directory/executable paths must be absolute.
+Set in the launcher's environment. Directory/executable paths must be absolute.
 
 | Variable | Default / meaning |
 | --- | --- |
-| `QWEN_APP_ROOT` | App installation root, inferred as two directories above `runtime/gateway` when omitted |
-| `QWEN_QUEUE_PORT` | `18022`; gateway binds to `127.0.0.1` |
-| `QWEN_QUEUE_URL` | `http://127.0.0.1:<QWEN_QUEUE_PORT>`; worker and benchmark connect here |
-| `QWEN_UPSTREAM_URL` | `http://127.0.0.1:18021`; existing backend origin |
-| `QWEN_MODEL_ID` | Required for Strata, exact served model; legacy default `qwen3.8-27b` |
-| `QWEN_BACKEND` | `strata`, `vllm` or `ninfer`; compatibility default `vllm`; not process lifecycle |
-| `QWEN_CONTEXT_TOKENS` | Optional explicitly verified Strata capacity; clamps reported capacity; setup supplies its stored effective context |
-| `QWEN_BACKEND_FILE` | Optional absolute file containing only `strata`, `vllm` or `ninfer` (up to 64 bytes). Reread per admission; missing falls back to `QWEN_BACKEND`, invalid/unreadable is an error. Strata connection changes require stopping the queue and explicitly configuring matching model/upstream/context before restart. |
-| `QWEN_VISION_READY` | `1` explicitly enables images for verified vLLM vision; default off; Strata/ninfer remain text only |
-| `QWEN_GATEWAY_DATA_DIR` | `<app root>/runtime/gateway`; UI token, request records, conversations and benchmark reports |
-| `QWEN_WORKER_DATA_DIR` | `<app root>/runtime/worker`; worker writes the `jobs` subdirectory |
-| `QWEN_WORK_DIR` | `<app root>/work`; default agent working directory, must already exist |
+| `QWEN_APP_ROOT` | Installation root inferred from module location |
+| `QWEN_QUEUE_PORT` | `18022`, bound to loopback |
+| `QWEN_QUEUE_URL` | `http://127.0.0.1:<QWEN_QUEUE_PORT>` for worker/benchmark |
+| `QWEN_UPSTREAM_URL` | `http://127.0.0.1:18021`, or explicit existing Strata origin |
+| `QWEN_MODEL_ID` | Required exact served Strata model; no default |
+| `QWEN_BACKEND` | `strata` only, also the default; not process lifecycle |
+| `QWEN_CONTEXT_TOKENS` | Optional explicitly verified capacity; clamps reported context; setup supplies its stored effective context |
+| `QWEN_BACKEND_FILE` | Optional absolute file containing only `strata`, up to 64 bytes. Reread at admission; missing falls back to the supported configured selection; invalid/unreadable is an error |
+| `QWEN_GATEWAY_DATA_DIR` | `<app root>/runtime/gateway`: token, requests, conversations, reports |
+| `QWEN_WORKER_DATA_DIR` | `<app root>/runtime/worker`: `jobs` subdirectory |
+| `QWEN_WORK_DIR` | `<app root>/work`: default agent working directory, must exist |
 
-The app root must be writable for default storage. A read-only installation can use the two data directory overrides. The UI must read the generated token and request files from the same gateway data directory; it must not ship a pre-existing token.
+The default app root must be writable. Use data-directory overrides for a read-only installation. UI and gateway must use the same data/token directory. Do not ship an existing token. Changing upstream/model/context requires explicitly stopping the owned queue and preparing the matching connection before restart, never live switching an engine file.
 
-Optional Hermes agent mode requires all four settings below. Ordinary chat works without Hermes. Missing paths cause a clear `Hermes unavailable` error before a job is accepted.
+Optional Hermes requires all four absolute paths: `QWEN_HERMES_PYTHON` (native `.exe` on Windows), `QWEN_HERMES_ROOT` (source), `QWEN_HERMES_HOME` (dedicated home), `QWEN_HERMES_GIT_BASH` (executable). Ordinary chat works without Hermes. Missing paths reject agent jobs before acceptance. Hermes receives fixed argument arrays with `shell:false`, local queue URL and its dedicated home; inherited `HERMES_PROFILE/CONFIG/ENV` are cleared. Folder selection is not a sandbox. Windows cancellation ends the Hermes process tree but does not undo prior changes. The bundled gateway requests terminal/file tools, not vision.
 
-| Variable | Required value |
-| --- | --- |
-| `QWEN_HERMES_PYTHON` | Hermes virtual environment's Python executable (`.exe` on Windows) |
-| `QWEN_HERMES_ROOT` | Hermes source working directory |
-| `QWEN_HERMES_HOME` | Dedicated, already configured Hermes home directory |
-| `QWEN_HERMES_GIT_BASH` | Git Bash executable; forwarded as `HERMES_GIT_BASH_PATH` |
+## Manual entry points
 
-Hermes receives fixed argument arrays through `spawn(..., {shell:false})`, a local API URL, its dedicated home, and the selected working directory. Inherited `HERMES_PROFILE`, `HERMES_CONFIG`, and `HERMES_ENV` are removed so that another installation cannot override the dedicated home. Environment variables cannot supply arbitrary shell command strings. Hermes itself can use terminal/file tools when the user requests agent work; choosing a folder is not a sandbox. Cancelling a Hermes job ends its process tree on Windows; it does not undo prior file changes.
-
-## Manual commands
-
-From the app installation root, in a terminal that has the configured environment:
+From the app root with the configured environment:
 
 ```powershell
-# Queue only. Keep the terminal open; Ctrl+C stops this queue process.
-node runtime/gateway/gateway.mjs
-
-# MCP stdio entry point. Configure this command in the host app's MCP settings.
-node runtime/worker/server.mjs
-
-# Benchmark an already running, idle backend via the queue.
-node runtime/gateway/token-test.mjs quick
-node runtime/gateway/token-test.mjs 8k
+node runtime/gateway/gateway.mjs       # queue only; Ctrl+C stops this queue
+node runtime/worker/server.mjs         # MCP stdio entry point for host registration
+node runtime/gateway/token-test.mjs quick # only an explicitly selected idle-server test
 ```
 
-Benchmark profiles are `quick`, `8k`, `32k`, `64k`, and `224k` (224k requires ninfer or a sufficiently large verified Strata context). Large profiles must fit the configured backend's context capacity. The 224K profile targets at most 228,864 input tokens, reserving 256 output tokens and another 256 tokens for template variation within the 229,376-token total limit. Prompt token counting uses the queue's normalized `/tokenize` endpoint; all model generation uses the shared queue. `cancel` followed by a newline on stdin cancels a benchmark. With `--ui`, closing stdin also cancels. Exit code is 0 for success, 1 for failure or cancellation; the final `보고서:` line contains the JSON report path. No model server is launched. Interrupted hard kills may leave `token-tests/running.lock`; remove it only after confirming that benchmark process has stopped.
+Benchmarks offer quick/8k/32k/64k/224k only when actual context fits. Chat reserves at least 4,096 output tokens (or the larger requested allowance); external output is capped at 12,000. Benchmark context tests reserve 256 output plus 256 template headroom. The 224k target is at most 228,864 input tokens and is offered only with sufficient verified capacity. All generation uses the shared FIFO. Counting does not generate tokens.
 
-Switch the backend only while the queue/benchmark is idle. A queued request keeps the backend mode selected at admission for its timeout/record; changing the backend selection file never starts or stops a server. A running benchmark keeps its startup mode for profile/time limits.
+`cancel` plus newline on stdin cancels a benchmark; `--ui` also cancels on stdin closure. Exit 0 means completed; exit 1 means failed/cancelled. `보고서:` identifies the JSON report. Remove a stale `token-tests/running.lock` only after confirming that its process stopped. No benchmark auto-starts or loads a model.
 
-## HTTP API for the UI
+## HTTP and MCP contracts
 
-The queue permits one generation at a time, keeps FIFO order and admits up to 24 queued requests. It rewrites requests to the configured model and disables reasoning, with a maximum output of 12,000 tokens for external requests. Direct chat reserves 4,096 output tokens: its input budget is 61,440 tokens for vLLM's 65,536-token context and 225,280 for NInfer's 229,376-token context. System text and conversation history count toward that input budget. Prompts over 12,000 characters are accepted when their actual token count fits; an independent 4,000,000-character safety limit remains. vLLM token counting uses `/tokenize`; NInfer uses `/v1/messages/count_tokens`, with system messages separated into `system` and `input_tokens` normalized to `count`. This replaces the need for a separate compatibility bridge. NInfer generation and streaming tool-call chunks pass through unchanged. No automatic backend detection or shell process scan occurs.
+One active generation, FIFO admission and up to 24 pending requests. Requests use the verified model and disable reasoning. Chat counts system/history toward its context budget. A prompt over 12,000 characters is valid when token count fits; an independent 4,000,000-character limit remains. Browser Origin requests are refused. No remote redirect is followed.
 
-- `GET /health`: 200 with `{ready:true}` or 503 with `{ready:false}`.
+- `GET /health`: 200 `{ready:true}` or 503 `{ready:false}`.
 - `GET /queue`: `{running,waiting,ui_running}` counts.
-- `GET /capabilities`: backend/model/loaded, actual `context_tokens`, `chat_input_budget`, fitting `benchmark_profiles`, `vision_ready`, `image_limit:1`, `video_ready:false`; Strata remains text only.
-- `GET /v1/models`: pass through. `GET /metrics`: pass through for legacy backends, normalized compatibility metrics for Strata. `GET /status`: normalized Strata JSON metrics.
-- `POST /tokenize`: accepts `{messages}` and returns `{count}` for the selected backend. NInfer counting accepts text system/user/assistant messages; token counting does not perform generation.
-- `POST /v1/chat/completions`: OpenAI-compatible chat/SSE; `x-qwen-request-id` response header identifies the saved request. Requests with a browser `Origin` header are rejected.
-- All `/ui/*` routes require `x-ui-token`, read from `<gateway data dir>/ui-token.txt`, generated on first queue startup.
-- `POST /ui/jobs`: `{mode:"chat"|"agent",prompt,session,cwd?}` returns `{id}`. `cwd` applies to agent mode.
-- `GET /ui/jobs/<id>`: status (`running`, `completed`, `incomplete`, `failed`, `cancelled`), streamed `output`, usage, timestamps and available `performance` data. Poll until `finished_at` is present. Jobs are in-memory; unavailable IDs return 404 after a queue restart.
-- `DELETE /ui/jobs/<id>`: cancels that job; completed conversation pairs remain persisted, cancelled replies are not committed.
-- `GET /ui/queue`: active/pending entries and `ui_job_id` for matching UI requests, without prompt content.
-- `DELETE /ui/conversations/<session>` or `/ui/agent-conversations/<session>`: deletes that session's stored state. Active sessions return 409; model-off deletion is supported.
+- `GET /capabilities`: Strata model/loaded/context, chat input budget, fitting benchmark profiles, `vision_ready:false`, `video_ready:false`.
+- `GET /v1/models`: upstream models. `GET /status`: normalized JSON metrics. `GET /metrics`: compatibility text metrics.
+- `POST /tokenize`: `{messages}` → `{count}` via the Strata count adapter.
+- `POST /v1/chat/completions`: OpenAI-compatible chat/SSE with `x-qwen-request-id`.
+- All `/ui/*` routes require `x-ui-token` from the first-start generated `ui-token.txt`.
+- `POST /ui/jobs`: `{mode:"chat"|"agent",prompt,session,cwd?}` → `{id}`; cwd applies to agent mode.
+- `GET /ui/jobs/<id>`: output/status/usage/timestamps/performance. Poll until `finished_at`. Unknown IDs after restart return 404; never blindly resubmit.
+- `DELETE /ui/jobs/<id>`: cancel. Cancelled replies are not committed as completed conversation pairs.
+- `GET /ui/queue`: active/pending IDs, source and matching UI-job association, no prompt text.
+- `DELETE /ui/conversations/<session>` or `/ui/agent-conversations/<session>`: authenticated/idempotent session deletion, active-session protection (409), works with model off.
 
-`requests/<id>.json` contains usage/status/timing; `.request.txt` contains the request text; `.md` and `.live.txt` contain generated output. Image binaries are redacted from request logs. Request text and output can contain private user data and must never be copied into a public release.
+`requests/<id>.json` stores usage/status/timing; `.request.txt`, `.md` and `.live.txt` contain private text/output. Binary media is redacted by logging helpers, but text can still contain secrets. Never publish runtime data.
 
-The MCP worker exposes `qwen_submit` (task plus explicit absolute text-file paths/ranges) and `qwen_result` (job ID). It reads only submitted files, returns `unavailable` if the queue/backend is offline, and writes results under `<worker data dir>/jobs`. It does not execute generated code or edit submitted files. `usage` is local model usage; request speed includes queue/HTTP time and is not an OpenAI cost or token-savings metric.
+The MCP worker exposes `qwen_submit` (task and explicit absolute text-file paths/ranges) and `qwen_result` (job ID). It reads only submitted files, returns unavailable when offline and saves under its own jobs directory. It does not run generated code or edit the submitted files. Local usage/speed includes queue/HTTP time; it is not a paid-provider savings metric.
 
 ## Offline validation
 
-These tests use only temporary fixture data and ephemeral loopback fake backends. No installed model or existing user records are read.
+Use an approved PowerShell environment, already installed Node 22+ and a clean isolated results directory. Tests use ephemeral fake Strata loopback servers and temporary data, not installed models/GPU or user history:
 
 ```powershell
-node --test runtime/gateway/test-*.mjs runtime/worker/test-*.mjs
-# Approved PowerShell environment; no policy override
+./setup/runtime-tests.ps1
+./setup/setup-tests.ps1
 ./setup/strata-tests.ps1
 ./setup/strata-attach-tests.ps1
-# After build.cmd, all ten app tests use a new isolated results directory
+# After build.cmd; app tests require a new isolated results directory
 ./setup/app-tests.ps1
 ```
 
-Coverage includes FIFO serialization, two-turn conversation context, persistence/compaction, usage/timing, queued and active cancellation, auth, unavailable Hermes, worker results/offline fallback, benchmark quick/cancellation, media limits/redaction, and fragmented UTF-8 SSE. NInfer fixtures also verify token-count translation, live backend-file switching/validation, streaming tool-call preservation, and a 224K benchmark with output/template reservation. Direct-chat boundary tests verify exact input budgets, one-token overflow rejection, and long character inputs. Strata fixtures additionally cover loaded/model/context validation, fallback/tool token conversion, native/missing/reset metrics, failed/malformed metrics without hanging, text-only capabilities and image rejection, overflow before generation and tool SSE usage/timings. The attach setup test uses an ephemeral fake Strata plus already available Node to exercise Install/receipt/Verify and isolated opt-in app configuration without starting a gateway/model. App tests write only to `QWEN_SELF_TEST_DIR` and retain failures/previews there. These fixtures verify API compatibility logic, not inference quality or throughput of a real model.
+The explicit runtime suite covers FIFO, auth, two-turn context, session persistence/compaction, usage/timing, queued/active cancellation, optional Hermes failure, worker/offline fallback, quick/cancel and 224k benchmarks with reservations, text-only media rejection/redaction, fragmented UTF-8/tool SSE, backend-file validation, loaded/identity/context, count fallback/errors, native/missing/reset/malformed metrics and no redirects. Context tests verify exact 32K/256K server-derived budgets, one-token overflow and character limits without weakening assertions/timeouts. Setup tests cover package-copy completeness, Node reuse, opt-in settings backup, identity/ownership, and refusal to migrate legacy selections. App tests write only to `QWEN_SELF_TEST_DIR` and retain failures/previews. These are compatibility checks, not inference quality/throughput or fresh GPU installation evidence.
 
-Release source allowlists must exclude `ui-token.txt`, `requests/`, `jobs/`, `conversations/`, `agent-sessions/`, `token-tests/`, Hermes homes and all generated configuration containing credentials. Never copy an existing runtime directory recursively into a public package.
+The package allowlist excludes generated tokens, requests, jobs, conversations, agent sessions, token reports, Hermes homes and credentials. Never recursively copy an existing runtime directory into a public release. Updating source does not delete prior user installations/history.

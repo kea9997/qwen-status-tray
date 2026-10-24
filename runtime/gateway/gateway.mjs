@@ -8,7 +8,6 @@ import {readStream} from '../worker/stream-response.mjs';
 import {ConversationStore} from './conversation-store.mjs';
 import {AgentSessions} from './agent-sessions.mjs';
 import {inspectMedia,logMessages} from './media-policy.mjs';
-import {visionReady as currentVisionReady} from './vision-state.mjs';
 import {readConfig,readBackend,loopbackUrl} from './runtime-config.mjs';
 import {countTokens} from './backend-adapter.mjs';
 import {CHAT_OUTPUT_TOKENS,MAX_CHAT_CHARACTERS,chatInputBudget,benchmarkProfiles} from './context-limits.mjs';
@@ -16,10 +15,12 @@ import {readStrata,strataJson,normalizeStrataMetrics,strataPrometheus} from './s
 
 export async function createGateway(options={}){
  const config=readConfig();
- const {port=config.port,root=config.gatewayRoot,timeout=null,visionReady=currentVisionReady}=options;
+ const {port=config.port,root=config.gatewayRoot,timeout=null}=options;
  const upstream=loopbackUrl(options.upstream||config.upstream,'upstream'),model=config.model;
  async function identity(backend,signal){
-  return backend==='strata'?readStrata(upstream,model,config.contextTokens,signal):{backend,model,contextTokens:backend==='ninfer'?229376:65536,vision:backend!=='ninfer'&&await visionReady()};
+  if(backend!=='strata')throw Error('Only Strata is supported');
+  try{return await readStrata(upstream,model,config.contextTokens,signal);}
+  catch(error){error.status=503;throw error;}
  }
  async function requireHermes(){
   const {python,root:hermesRoot,home,bash}=config.hermes;
@@ -38,12 +39,12 @@ export async function createGateway(options={}){
  const json=(res,status,data)=>{if(!res.destroyed&&!res.headersSent){res.writeHead(status,{'content-type':'application/json'});res.end(JSON.stringify(data));}};
  const save=async(id,suffix,text)=>{const file=path.join(logs,id+suffix);await fs.writeFile(file+'.tmp',text);await fs.rename(file+'.tmp',file);};
  async function body(req){const chunks=[];let size=0;for await(const b of req){size+=b.length;if(size>16_000_000)throw Error('Request too large');chunks.push(b);}return JSON.parse(Buffer.concat(chunks).toString('utf8'));}
- async function health(){try{const backend=await readBackend(config);return backend==='strata'?(await identity(backend)).loaded:(await fetch(upstream+'/health',{redirect:'error',signal:AbortSignal.timeout(1500)})).ok;}catch{return false;}}
+ async function health(){try{return (await identity(await readBackend(config))).loaded;}catch{return false;}}
  async function drain(){
   if(active)return;
   while(pending.length){const job=pending.shift();if(job.res.destroyed)continue;active=job;
-   const {id,res,payload,controller,backend}=job;const begin=Date.now();const record={id,status:'running',created_at:job.created,source:job.source,backend:backend==='strata'?'strata':backend==='ninfer'?'ninfer':'vLLM',model:payload.model,context_tokens:job.contextTokens,queue_seconds:(begin-Date.parse(job.created))/1000};let last=0,firstAt=null;
-   const timer=setTimeout(()=>controller.abort(),timeout??(backend==='ninfer'?1800000:240000));
+   const {id,res,payload,controller,backend}=job;const begin=Date.now();const record={id,status:'running',created_at:job.created,source:job.source,backend,model:payload.model,context_tokens:job.contextTokens,queue_seconds:(begin-Date.parse(job.created))/1000};let last=0,firstAt=null;
+   const timer=setTimeout(()=>controller.abort(),timeout??240000);
    try{
     await save(id,'.json',JSON.stringify(record));
     if(backend==='strata'){
@@ -73,7 +74,6 @@ export async function createGateway(options={}){
   const current=await identity(backend);
   const media=inspectMedia(payload.messages);
   if(media.images&&backend==='strata')return json(res,400,{error:{message:'이 게이트웨이의 Strata 경로는 텍스트 전용입니다. 이미지 토큰 계산은 지원하지 않으며 서버 재시작으로 활성화되지 않습니다.'}});
-  if(media.images&&backend==='ninfer')return json(res,400,{error:{message:'ninfer 224K 모드는 텍스트 전용입니다. 이미지 작업은 vLLM 모드에서 사용하세요.'}});
   if(media.images&&!current.vision)return json(res,400,{error:{message:'현재 실행 중인 Qwen 서버의 시각 기능이 꺼져 있거나 확인되지 않았습니다. 준비된 설정으로 서버를 수동으로 껐다 켠 뒤 사진을 다시 보내주세요.'}});
   if(pending.length>=24)return json(res,429,{error:{message:'Queue full'}});
   if(!await health())return json(res,503,{error:{message:'Qwen 서버가 꺼져 있거나 준비되지 않았습니다. 수동으로 켜주세요.'}});
@@ -96,7 +96,7 @@ export async function createGateway(options={}){
  async function uiStart(data){
   const backend=await readBackend(config);
   if(!['chat','agent'].includes(data.mode)||typeof data.prompt!=='string'||!data.prompt.trim()||data.prompt.length>MAX_CHAT_CHARACTERS)throw Error('Invalid request');
-  if(!await health())throw Error('Qwen 서버가 꺼져 있습니다. 수동으로 켜주세요.');
+  if(!await health()){const error=Error('Qwen 서버가 꺼져 있습니다. 수동으로 켜주세요.');error.status=503;throw error;}
   if(deletingSessions.has(String(data.session||'default')))throw Error('이 대화를 삭제하는 중입니다.');
   if([...jobs.values()].some(j=>j.status==='running'))throw Error('직접 요청이 진행 중입니다. 완료하거나 중단 후 다시 실행하세요.');
   let cwd,resume=null;
@@ -131,7 +131,7 @@ export async function createGateway(options={}){
    delete env.Path;
    for(const key of ['HERMES_PROFILE','HERMES_CONFIG','HERMES_ENV'])delete env[key];
    job.resumed=!!resume;job.phase=resume?'이전 작업 이어가는 중':'새 작업 실행 중';
-   const child=spawn(config.hermes.python,['-m','hermes_cli.main','chat',...(resume?['--resume',resume]:[]),'--query-file',promptFile,'--oneshot','--in',cwd,'--provider','custom','--toolsets','terminal,file,vision','--max-turns','12','--run-budget','300','-Q'],{cwd:config.hermes.root,env,shell:false,windowsHide:true,stdio:['ignore','pipe','pipe']});job.child=child;
+   const child=spawn(config.hermes.python,['-m','hermes_cli.main','chat',...(resume?['--resume',resume]:[]),'--query-file',promptFile,'--oneshot','--in',cwd,'--provider','custom','--toolsets','terminal,file','--max-turns','12','--run-budget','300','-Q'],{cwd:config.hermes.root,env,shell:false,windowsHide:true,stdio:['ignore','pipe','pipe']});job.child=child;
    child.stdout.setEncoding('utf8');child.stderr.setEncoding('utf8');let errors='';child.stdout.on('data',s=>{job.output=(job.output+s).slice(-100000);});child.stderr.on('data',s=>{errors=(errors+s).slice(-4000);});
    child.on('error',e=>{job.status='failed';job.error=e.message;});child.on('close',async code=>{clearTimeout(job.timer);try{const matches=[...errors.matchAll(/session_id:\s*(\d{8}_\d{6}_[a-f0-9]+)/g)];if(matches.length){job.hermes_session=matches.at(-1)[1];await agentSessions.save(String(data.session||'default'),cwd,job.hermes_session);}else if(code===0){job.warning='세션 ID를 확인하지 못했습니다. 다음 요청은 새 작업으로 시작될 수 있습니다.';}if(job.status==='running')job.status=code===0?'completed':'failed';}catch(e){job.status='failed';job.error=e.message;}job.exit_code=code;if(code!==0)job.error=errors;job.finished_at=new Date().toISOString();});
    job.timer=setTimeout(()=>cancel(job),360000);
@@ -145,7 +145,7 @@ export async function createGateway(options={}){
   if(url.pathname==='/health'){const ready=await health();return json(res,ready?200:503,{ready});}
   if(url.pathname==='/capabilities'){
    const backend=await readBackend(config),current=await identity(backend);
-   return json(res,200,{backend,model:current.model,loaded:backend==='strata'?current.loaded:await health(),context_tokens:current.contextTokens,chat_input_budget:chatInputBudget(backend,current.contextTokens),benchmark_profiles:benchmarkProfiles(backend,current.contextTokens),vision_ready:current.vision&&(backend!=='strata'||current.loaded),image_limit:1,video_ready:false});
+   return json(res,200,{backend,model:current.model,loaded:current.loaded,context_tokens:current.contextTokens,chat_input_budget:chatInputBudget(backend,current.contextTokens),benchmark_profiles:benchmarkProfiles(backend,current.contextTokens),vision_ready:current.vision&&(backend!=='strata'||current.loaded),image_limit:1,video_ready:false});
   }
   if(url.pathname==='/status'&&await readBackend(config)==='strata')return json(res,200,normalizeStrataMetrics(await strataJson(upstream,'/metrics')));
   if(url.pathname==='/queue')return json(res,200,{running:active?1:0,waiting:pending.length,ui_running:[...jobs.values()].filter(j=>j.status==='running').length});
@@ -177,7 +177,7 @@ export async function createGateway(options={}){
    return json(res,200,Object.fromEntries(Object.entries(job).filter(([k])=>!['child','controller','timer'].includes(k))));
   }
   json(res,404,{error:{message:'Unknown endpoint'}});
- }catch(e){json(res,400,{error:{message:e.message}});}});
+ }catch(e){json(res,e.status||400,{error:{message:e.message}});}});
  await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(port,'127.0.0.1',resolve);});return server;
 }
 if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url)){const server=await createGateway();console.log('Qwen queue listening on 127.0.0.1:'+server.address().port);}

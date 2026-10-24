@@ -1,14 +1,16 @@
 # Isolated Hermes installation
 
-`hermes-install.ps1` installs the official Nous Research Hermes Python source and its **core + messaging** dependencies. It prepares model `qwen3.8-27b` at `http://127.0.0.1:18022/v1`. It does not include Hermes Desktop, Node/browser automation, voice models, the Qwen model, or the Qwen queue. Those components have separate installers and lifecycles.
+`hermes-install.ps1` installs the official Nous Research Hermes Python source and its **core + messaging** dependencies. It uses the exact Strata model recorded by `setup/setup.ps1` at `http://127.0.0.1:18022/v1`. A standalone Install requires an explicit verified `-ModelId` if that receipt is absent; no model ID is guessed. It does not include Hermes Desktop, Node/browser automation, voice models, the Qwen model, or the Qwen queue. Those components have separate installers and lifecycles.
 
 ## Windows
 
 Run these commands from an ordinary PowerShell session. Replace both paths with your own absolute paths; do not add `-ExecutionPolicy Bypass`. If organizational policy blocks the script or a downloaded executable, obtain an approved installation route from your administrator.
 
 ```powershell
-& 'D:\QwenStatus\setup\hermes-install.ps1' -Action Plan -InstallRoot 'D:\QwenSuite'
-& 'D:\QwenStatus\setup\hermes-install.ps1' -Action Install -InstallRoot 'D:\QwenSuite'
+# Replace with the exact model verified from your Strata health/models.
+$model = 'qwen3.8-flash-next-sc117-uncensored-iq3_xxs'
+& 'D:\QwenStatus\setup\hermes-install.ps1' -Action Plan -InstallRoot 'D:\QwenSuite' -ModelId $model
+& 'D:\QwenStatus\setup\hermes-install.ps1' -Action Install -InstallRoot 'D:\QwenSuite' -ModelId $model
 & 'D:\QwenStatus\setup\hermes-install.ps1' -Action Verify -InstallRoot 'D:\QwenSuite'
 ```
 
@@ -49,7 +51,7 @@ The generated profile specifies the local queue explicitly for the main model, a
 
 ## Gates and manual steps
 
-1. Start the Qwen queue separately when you choose. To check its advertised model without sending a prompt, run `Verify` with `-CheckEndpoint`. It only GETs `/v1/models` and never starts a server or sends an inference request. WSL must be able to reach that same loopback endpoint.
+1. Start the Qwen queue separately when you choose. To check its advertised model without sending a prompt, run `Verify` with `-CheckEndpoint`. It only GETs `/v1/models` and never starts a server or sends an inference request. The native Windows CLI must reach that same loopback endpoint.
 2. Open the CLI yourself and review any first-run terms, telemetry choices, or permission prompts. The installer records no implicit agreement and does not launch Hermes to answer prompts.
 3. Configure external providers, tools, or accounts yourself if needed. Their private settings belong only in the installed dedicated profile.
 4. For Telegram, obtain and enter your own bot token and allowed-user settings using the same dedicated environment and the CLI arguments `gateway setup`. Start `gateway run` only after reviewing that configuration. The installer includes messaging dependencies but neither configures nor starts Telegram.
@@ -61,8 +63,10 @@ The generated profile specifies the local queue explicitly for the main model, a
 The same script can be run **inside WSL using an already installed PowerShell 7**, as an ordinary Linux user, with a new absolute Linux path:
 
 ```powershell
-& '/mnt/d/QwenStatus/setup/hermes-install.ps1' -Action Plan -InstallRoot '/home/alice/qwen-suite'
-& '/mnt/d/QwenStatus/setup/hermes-install.ps1' -Action Install -InstallRoot '/home/alice/qwen-suite'
+# Replace with the exact verified model; the Windows gateway does not launch this Linux CLI.
+$model = 'qwen3.8-flash-next-sc117-uncensored-iq3_xxs'
+& '/mnt/d/QwenStatus/setup/hermes-install.ps1' -Action Plan -InstallRoot '/home/alice/qwen-suite' -ModelId $model
+& '/mnt/d/QwenStatus/setup/hermes-install.ps1' -Action Install -InstallRoot '/home/alice/qwen-suite' -ModelId $model
 ```
 
 This route needs `/bin/bash` and `tar`; it never installs WSL, PowerShell, distribution packages, or systemd services. Python becomes `hermes/venv/bin/python`, and the bash contract is `/bin/bash`. Prefer the Linux filesystem for the venv. The Windows gateway currently accepts native Windows Python `.exe` paths, so the WSL variant is for a manually launched Linux CLI and is **not integrated into that Windows gateway**.

@@ -35,7 +35,7 @@ partial class QwenStatus {
   }
   return double.NaN;
  }
- static bool HealthLoaded(string body){return HealthLoaded(body,Backend()=="strata",Setting("modelId",""));}
+ static bool HealthLoaded(string body){return Backend()=="strata"&&HealthLoaded(body,true,Setting("modelId",""));}
  static bool HealthLoaded(string body,bool strata,string expected){
   if(string.IsNullOrWhiteSpace(body)||!body.TrimStart().StartsWith("{"))return !strata;
   try{
@@ -57,16 +57,16 @@ partial class QwenStatus {
  static bool ExternalStrata(){return Backend()=="strata"&&Setting("serverOwnership","external")!="managed";}
  static string BackendLabel(){return Backend()=="strata"?"Strata FN":Backend();}
  internal static string[] TokenProfiles(){
-  if(Backend()!="strata")return new[]{"quick","8k","32k","64k","224k"};
+  if(Backend()!="strata")return new string[0];
   double capacity;double.TryParse(Setting("contextTokens","0"),out capacity);
   var result=new List<string>{"quick"};string[] names={"8k","32k","64k","224k"};int[] targets={7680,32256,65024,228864};for(int i=0;i<names.Length;i++)if(targets[i]+512<=capacity)result.Add(names[i]);return result.ToArray();
  }
  internal static void RuntimeEnvironment(System.Diagnostics.ProcessStartInfo info){
-  string backend=Backend()=="vLLM"?"vllm":Backend();info.EnvironmentVariables["QWEN_BACKEND"]=backend;info.EnvironmentVariables["QWEN_BACKEND_FILE"]=BackendFile;
+  string backend=Backend();if(backend!="strata")throw new InvalidOperationException("Strata만 지원합니다. 설치 도우미에서 새 전용 폴더에 연결을 준비하세요.");info.EnvironmentVariables["QWEN_BACKEND"]=backend;info.EnvironmentVariables["QWEN_BACKEND_FILE"]=BackendFile;
   info.EnvironmentVariables["QWEN_QUEUE_URL"]=new Uri(QueueUrl).GetLeftPart(UriPartial.Authority);info.EnvironmentVariables["QWEN_UPSTREAM_URL"]=ServerUrl.TrimEnd('/');
-  info.EnvironmentVariables["QWEN_MODEL_ID"]=Setting("modelId",backend=="strata"?"":"qwen3.8-27b");info.EnvironmentVariables["QWEN_CONTEXT_TOKENS"]=backend=="strata"?Setting("contextTokens",""):"";info.EnvironmentVariables["QWEN_GATEWAY_DATA_DIR"]=GatewayRoot;
+  info.EnvironmentVariables["QWEN_MODEL_ID"]=Setting("modelId","");info.EnvironmentVariables["QWEN_CONTEXT_TOKENS"]=Setting("contextTokens","");info.EnvironmentVariables["QWEN_GATEWAY_DATA_DIR"]=GatewayRoot;
   string receipt=Path.Combine(ManagedRoot(),"setup-state.json");
-  if(File.Exists(receipt)){var c=ObjectAt(new JavaScriptSerializer().Deserialize<Dictionary<string,object>>(File.ReadAllText(receipt)),"connection");if(c!=null&&Field(c,"backend")==backend){info.EnvironmentVariables["QWEN_MODEL_ID"]=Field(c,"model");info.EnvironmentVariables["QWEN_UPSTREAM_URL"]=Field(c,"upstream");info.EnvironmentVariables["QWEN_CONTEXT_TOKENS"]=backend=="strata"?Field(c,"contextTokens"):"";}}
+  if(File.Exists(receipt)){var c=ObjectAt(new JavaScriptSerializer().Deserialize<Dictionary<string,object>>(File.ReadAllText(receipt)),"connection");if(c!=null&&Field(c,"backend")==backend){info.EnvironmentVariables["QWEN_MODEL_ID"]=Field(c,"model");info.EnvironmentVariables["QWEN_UPSTREAM_URL"]=Field(c,"upstream");info.EnvironmentVariables["QWEN_CONTEXT_TOKENS"]=Field(c,"contextTokens");}}
  }
  double reportedContext=double.NaN,nativeInputSpeed=double.NaN;string reportedModel="";
  static void StrataTest(){
@@ -75,8 +75,13 @@ partial class QwenStatus {
   const string health="{\"service\":\"strata\",\"model\":\"fixture-flash-next\",\"max_context\":32768,\"loaded\":true}";
   if(!HealthLoaded(health,true,"fixture-flash-next")||HealthLoaded(health.Replace("true","false"),true,"fixture-flash-next"))throw new Exception("Reachable unloaded Strata treated as ready");
   foreach(string invalid in new[]{"", "not JSON", "{", "null", "{}", "{\"loaded\":true}",health.Replace("strata","foreign"),health.Replace("32768","null"),health.Replace("32768","\"32768\""),health.Replace("32768","true"),health.Replace("true","\"true\""),health.Replace("fixture-flash-next","wrong-model")})if(HealthLoaded(invalid,true,"fixture-flash-next"))throw new Exception("Invalid/foreign/wrong-model health treated as Strata ready: "+invalid);
-  if(!HealthLoaded("ok",false,"")||!HealthLoaded("{\"status\":\"ok\"}",false,""))throw new Exception("Legacy non-Strata health regressed");
+  if(HealthLoaded("ok",true,"")||HealthLoaded("{\"status\":\"ok\"}",true,""))throw new Exception("Non-Strata health accepted");
   Settings["backend"]="strata";Settings["serverOwnership"]="external";Settings["modelId"]="fixture-flash-next";
+  Settings["contextTokens"]=32768;if(!TokenProfiles().SequenceEqual(new[]{"quick","8k","32k"}))throw new Exception("Token profiles ignored verified Strata context");
+  Settings["contextTokens"]=262144;if(TokenProfiles().Length!=5)throw new Exception("Large Strata profiles missing");
+  Settings["backend"]="unsupported";if(TokenProfiles().Length!=0||HealthLoaded(health))throw new Exception("Unsupported backend accepted");
+  bool refused=false;try{RuntimeEnvironment(new System.Diagnostics.ProcessStartInfo());}catch(InvalidOperationException){refused=true;}if(!refused)throw new Exception("Unsupported runtime environment accepted");
+  Settings["backend"]="strata";
   foreach(string gateway in new[]{"{\"ready\":true}","{\"running\":0,\"waiting\":0,\"ui_running\":0}","{\"running\":1,\"waiting\":2,\"ui_running\":1}","{\"active\":null,\"pending\":[]}"})if(!ProbeReady(gateway,false))throw new Exception("Healthy gateway treated as unloaded Strata: "+gateway);
   foreach(string gateway in new[]{"{\"ready\":false}","{\"ready\":\"true\"}","{","null","not JSON",""})if(ProbeReady(gateway,false))throw new Exception("Invalid/not-ready gateway accepted: "+gateway);
   if(!ProbeReady(health,true))throw new Exception("Valid configured Strata health rejected by diagnostics");

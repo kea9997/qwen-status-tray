@@ -1,14 +1,12 @@
 ﻿param(
     [ValidateSet('Plan','Install','Verify','StartGateway','StopGateway','StartBackend','StopBackend')][string]$Action='Plan',
     [string]$InstallRoot=(Split-Path -Parent $PSScriptRoot),
-    [ValidateSet('existing','vllm','ninfer','both','strata')][string]$Backend='existing',
-    [ValidateSet('standard','uncensored')][string]$Model='standard',
-    [ValidateSet('vllm','ninfer','strata')][string]$ExistingBackend='vllm',
+    [ValidateSet('existing','strata')][string]$Backend='existing',
+    [ValidateSet('strata')][string]$ExistingBackend='strata',
     [string]$UpstreamUrl,[string]$ModelId,
     [ValidateSet('IQ3_XXS','IQ2_XS')][string]$StrataProfile='IQ3_XXS',
     [string]$StrataSource,[string]$StrataPython,[string]$StrataConfig,[string]$EngineSha256,
     [int]$GpuIndex=-1,[int]$ContextTokens=262144,[int]$PoolWorkers=10,[double]$ResidentBudgetGiB=26,[string]$Prefill='',
-    [string]$HfTokenFile,
     [switch]$IncludeHermes,
     [switch]$ConfigureApp,
     [switch]$Json
@@ -47,18 +45,18 @@ function Probe([string]$Url) {
 }
 function Connection {
     $previous=Read-Receipt
-    if ($previous -and $previous.PSObject.Properties['connection']) { return $previous.connection }
-    return [pscustomobject]@{backend=(Read-Backend);upstream=$(if($UpstreamUrl){Strata-Origin $UpstreamUrl}else{'http://127.0.0.1:18021'});model=$(if($ModelId){$ModelId}else{'qwen3.8-27b'});contextTokens=$null;mode='existing'}
+    if ($previous -and $previous.PSObject.Properties['connection']) {
+        if ($previous.connection.backend -ne 'strata') { throw 'Strata만 지원합니다. 기존 설치는 변경하지 않으며 새 전용 폴더에서 연결을 준비하세요.' }
+        return $previous.connection
+    }
+    return [pscustomobject]@{backend=(Read-Backend);upstream=$(if($UpstreamUrl){Strata-Origin $UpstreamUrl}else{'http://127.0.0.1:18021'});model=$ModelId;contextTokens=$null;mode='existing'}
 }
 function Model-Ready {
     try {
         $c=Connection
-        if($c.backend -eq 'strata') {
-            if (-not $c.model -or $null -eq $c.contextTokens) { return $false }
-            $identity=Strata-Identity (Strata-Get $c.upstream '/health') (Strata-Get $c.upstream '/v1/models') $c.model
-            return $identity.loaded -and $identity.contextTokens -eq $c.contextTokens
-        }
-        return Probe ($c.upstream+'/health')
+        if ($c.backend -ne 'strata' -or -not $c.model -or $null -eq $c.contextTokens) { return $false }
+        $identity=Strata-Identity (Strata-Get $c.upstream '/health') (Strata-Get $c.upstream '/v1/models') $c.model
+        return $identity.loaded -and $identity.contextTokens -eq $c.contextTokens
     } catch { return $false }
 }
 function Strata-Parameters([string]$Operation) {
@@ -67,23 +65,21 @@ function Strata-Parameters([string]$Operation) {
     return $parameters
 }
 function Backend-Plans {
-    foreach ($selected in @(if ($Backend -eq 'both') {@('vllm','ninfer')} elseif ($Backend -eq 'existing') {@()} else {@($Backend)})) {
-        if($selected -eq 'strata') { $parameters=Strata-Parameters 'Plan';$output=& $setupShell -NoProfile -File (Join-Path $sourceRoot 'setup\strata-install.ps1') @parameters -Json }
-        else { $output=& $setupShell -NoProfile -File (Join-Path $sourceRoot 'setup\backend-install.ps1') -Action Plan -Backend $selected -Model $Model -InstallRoot $InstallRoot -Json }
-        if ($LASTEXITCODE -ne 0) { throw ('백엔드 설치 전 확인 실패: '+$selected+' · '+($output -join [Environment]::NewLine)) }
+    if ($Backend -eq 'strata') {
+        $parameters=Strata-Parameters 'Plan'
+        $output=& $setupShell -NoProfile -File (Join-Path $sourceRoot 'setup\strata-install.ps1') @parameters -Json
+        if ($LASTEXITCODE -ne 0) { throw ('Strata 설치 전 확인 실패 · '+($output -join [Environment]::NewLine)) }
         $output | ConvertFrom-Json
     }
 }
 function Emit-Plan {
     $node=Find-Node
-    $docker=Get-Command docker.exe -ErrorAction SilentlyContinue
-    $plan=[ordered]@{ action='plan'; installRoot=$InstallRoot; backend=$Backend; existingBackend=$ExistingBackend; model=$Model; hermes=[bool]$IncludeHermes;
+    $plan=[ordered]@{ action='plan'; installRoot=$InstallRoot; backend=$Backend; existingBackend=$ExistingBackend; profile=$StrataProfile; hermes=[bool]$IncludeHermes;
         node=$(if ($node) {$node} else {'설치 시 공식 Node.js 22 LTS portable 다운로드'});
-        docker=$(if ($docker) {'CLI 있음; 실제 엔진/GPU는 백엔드 검사에서 확인'} else {'없음; vLLM/ninfer 설치 전 Docker Desktop 및 GPU 지원 환경 필요'});
         connection=(Connection);modelServerReady=(Model-Ready); queueReady=(Probe 'http://127.0.0.1:18022/queue');
-        configureApp=[bool]$ConfigureApp; startsModelServer=$false; downloads=$(if($Backend -eq 'strata'){'Node가 없으면 공식 portable만 다운로드. Strata 엔진·모델 자동 다운로드 없음; 설치된 선행 조건 검증.'}elseif($Backend -eq 'existing'){'Node가 없으면 공식 portable만 다운로드. 기존 모델 서버는 변경하지 않음.'}else{'Node와 선택한 레거시 모델/백엔드. 모델은 수십 GB 이상이며 준비 공간은 더 필요합니다.'});
-        manualSteps=@('필요한 경우 Docker Desktop/WSL 설치 및 Windows 재부팅','gated 모델 선택 시 본인 Hugging Face 로그인과 접근 동의','Hermes의 계정/Telegram 설정은 본인이 직접 입력');
-        components=@('상태 앱','공통 대기열','MCP worker','선택한 모델 서버','선택한 Hermes'); backendPlans=@(Backend-Plans) }
+        configureApp=[bool]$ConfigureApp; startsModelServer=$false; downloads='Node가 없으면 공식 portable만 다운로드. Strata 엔진·모델 자동 다운로드 없음. 기존 모델 서버는 변경하지 않음.';
+        manualSteps=@('네이티브 준비는 검증된 Strata 소스·전용 Python·엔진·SC117 모델 설정이 먼저 필요','Hermes의 계정/Telegram 설정은 본인이 직접 입력');
+        components=@('상태 앱','공통 대기열','MCP worker','Strata 연결 또는 네이티브 준비','선택한 Hermes'); backendPlans=@(Backend-Plans) }
     $plan | ConvertTo-Json -Depth 12
 }
 function Copy-SourcePackage {
@@ -165,8 +161,9 @@ function Start-Gateway {
     $env:QWEN_GATEWAY_DATA_DIR=$gatewayRoot;$env:QWEN_WORKER_DATA_DIR=$workerRoot;$env:QWEN_WORK_DIR=Join-Path $InstallRoot 'work'
     foreach ($name in @('QWEN_HERMES_PYTHON','QWEN_HERMES_ROOT','QWEN_HERMES_HOME','QWEN_HERMES_GIT_BASH','QWEN_VISION_READY')) { [Environment]::SetEnvironmentVariable($name,$null,'Process') }
     $connection=Connection
+    if ($connection.backend -ne 'strata' -or [string]::IsNullOrWhiteSpace($connection.model) -or $null -eq $connection.contextTokens -or $connection.contextTokens -le 4096) { throw '검증된 Strata 연결을 먼저 준비하세요. 모델 ID·문맥을 추측해 대기열을 시작하지 않습니다.' }
     $env:QWEN_MODEL_ID=$connection.model;$env:QWEN_UPSTREAM_URL=Strata-Origin $connection.upstream
-    $env:QWEN_CONTEXT_TOKENS=if($connection.backend -eq 'strata'){[string]$connection.contextTokens}else{''}
+    $env:QWEN_CONTEXT_TOKENS=[string]$connection.contextTokens
     $env:QWEN_BACKEND=Read-Backend
     if($connection.backend -ne $env:QWEN_BACKEND -and ($connection.backend -eq 'strata' -or $env:QWEN_BACKEND -eq 'strata')) { throw 'Strata 연결과 백엔드 선택이 다릅니다. 대기열을 끈 뒤 설치 도우미에서 연결을 명시적으로 준비하세요.' }
     $env:QWEN_BACKEND_FILE=Join-Path $InstallRoot 'backend.txt'
@@ -186,31 +183,26 @@ function Start-Gateway {
     Write-Host '공통 대기열 준비됨: http://127.0.0.1:18022/v1'
 }
 function Read-Backend {
-    if ($Backend -in @('vllm','ninfer','strata')) { return $Backend }
-    $file=Join-Path $InstallRoot 'backend.txt';if (Test-Path -LiteralPath $file) { $selected=(Get-Content -LiteralPath $file -Raw).Trim();if ($selected -in @('vllm','ninfer','strata')) {return $selected} }
-    return $ExistingBackend
+    $file=Join-Path $InstallRoot 'backend.txt'
+    if (Test-Path -LiteralPath $file) {
+        $selected=(Get-Content -LiteralPath $file -Raw).Trim()
+        if ($selected -ne 'strata') { throw 'Strata만 지원합니다. 기존 백엔드 선택은 변경하지 않으며 새 전용 폴더에서 준비하세요.' }
+    }
+    return 'strata'
 }
 function Call-Installer([string]$Script,[string[]]$Arguments) {
     & $setupShell -NoProfile -File (Join-Path $InstallRoot ('setup\'+$Script)) @Arguments
     if ($LASTEXITCODE -ne 0) { throw ($Script+' 종료 코드 '+$LASTEXITCODE+' · 위 로그의 조치를 확인하세요.') }
 }
 function Call-Backend([string]$Operation,[string]$Selected) {
-    if($Selected -eq 'strata') {
-        $connection=Connection
-        if($Operation -in @('Start','Stop') -and $connection.mode -ne 'managed'){throw '기존 Strata 연결은 상태 확인/대기열만 제공합니다. 외부 서버를 시작·종료하지 않습니다.'}
-        Call-Installer 'strata-install.ps1' (Strata-Parameters $Operation);return
-    }
-    $parameters=@('-Action',$Operation,'-Backend',$Selected,'-InstallRoot',$InstallRoot,'-Model',$Model)
-    if ($HfTokenFile) { $parameters+=@('-HfTokenFile',$HfTokenFile) }
-    Call-Installer 'backend-install.ps1' $parameters
+    if ($Selected -ne 'strata') { throw 'Strata만 지원합니다.' }
+    $connection=Connection
+    if($Operation -in @('Start','Stop') -and $connection.mode -ne 'managed'){throw '기존 Strata 연결은 상태 확인/대기열만 제공합니다. 외부 서버를 시작·종료하지 않습니다.'}
+    Call-Installer 'strata-install.ps1' (Strata-Parameters $Operation)
 }
-# Start/stop uses the installed selection unless the user explicitly supplies a model.
-if ($Action -in @('StartBackend','StopBackend') -and -not $PSBoundParameters.ContainsKey('Model')) {
-    $receipt=Read-Receipt
-    $selected=Read-Backend
-    if ($receipt -and $receipt.PSObject.Properties['models'] -and $receipt.models.PSObject.Properties[$selected]) { $Model=$receipt.models.$selected }
-    elseif ($receipt -and $receipt.model -in @('standard','uncensored')) { $Model=$receipt.model }
-}
+# Refuse legacy selections before any file/process changes, including StopGateway.
+$null=Read-Backend
+$null=Connection
 if ($Action -eq 'Plan') { Emit-Plan;exit 0 }
 if ($Action -eq 'Verify') {
     $checks=[ordered]@{node=[bool](Find-Node);gatewaySource=(Test-Path -LiteralPath (Join-Path $gatewayRoot 'gateway.mjs'));workerSource=(Test-Path -LiteralPath (Join-Path $workerRoot 'server.mjs'));modelReady=(Model-Ready);queueReady=(Probe 'http://127.0.0.1:18022/queue');recordFolder=(Test-Path -LiteralPath (Join-Path $gatewayRoot 'requests'));uiTokenPresent=(Test-Path -LiteralPath (Join-Path $gatewayRoot 'ui-token.txt'))}
@@ -233,10 +225,9 @@ if ($Action -eq 'StopBackend') { Call-Backend 'Stop' (Read-Backend);exit 0 }
 
 $plans=@(Backend-Plans)
 foreach ($plan in $plans) { if (-not $plan.supported) { throw ('지원하지 않는 조합: '+$plan.backend+' / '+$plan.model+' · '+$plan.unsupportedReason) } }
-if ($Model -eq 'uncensored' -and $Backend -notin @('existing','strata') -and (-not $HfTokenFile -or -not (Test-Path -LiteralPath $HfTokenFile -PathType Leaf))) { throw '접근 동의 후 Hugging Face 토큰 파일을 선택하세요. 토큰 내용을 채팅이나 로그에 붙여넣지 마세요.' }
 # Resolve/discover only on explicit Install, never by starting or warming a model.
 $connection=Connection;$prior=Read-Receipt
-if($Backend -eq 'existing' -and ($ExistingBackend -eq 'strata' -or $connection.backend -eq 'strata')) {
+if($Backend -eq 'existing') {
     if(-not $UpstreamUrl -and (-not $prior -or -not $prior.PSObject.Properties['connection'])) { throw '기존 Strata 연결은 -UpstreamUrl loopback 주소를 명시하세요.' }
     $origin=if($UpstreamUrl){Strata-Origin $UpstreamUrl}else{$connection.upstream}
     $identity=Strata-Identity (Strata-Get $origin '/health') (Strata-Get $origin '/v1/models') $ModelId
@@ -244,8 +235,6 @@ if($Backend -eq 'existing' -and ($ExistingBackend -eq 'strata' -or $connection.b
 } elseif($Backend -eq 'strata') {
     if($UpstreamUrl -and (Strata-Origin $UpstreamUrl) -ne 'http://127.0.0.1:18021') { throw '관리 Strata 설치는 18021만 사용합니다. 다른 포트는 기존 연결로 선택하세요.' }
     $connection=[pscustomobject]@{backend='strata';upstream='http://127.0.0.1:18021';model='';contextTokens=$ContextTokens;mode='managed'}
-} elseif($UpstreamUrl -or $ModelId) {
-    $connection=[pscustomobject]@{backend=(Read-Backend);upstream=$(if($UpstreamUrl){Strata-Origin $UpstreamUrl}else{$connection.upstream});model=$(if($ModelId){$ModelId}else{$connection.model});contextTokens=$null;mode=$(if($Backend -eq 'existing'){'existing'}else{'managed'})}
 }
 if((Test-Path -LiteralPath (Join-Path $InstallRoot 'backend.txt')) -and (Read-Backend) -ne $connection.backend -and ($connection.backend -eq 'strata' -or (Read-Backend) -eq 'strata')) { throw '기존 백엔드 선택을 자동 변경하지 않습니다. 새 설치 폴더에서 Strata 연결을 준비하세요.' }
 $prior=Read-Receipt
@@ -261,19 +250,16 @@ try {
     New-Item -ItemType Directory -Path (Join-Path $InstallRoot 'work') -Force | Out-Null
     $previous=Read-Receipt;$models=@{}
     if ($previous -and $previous.PSObject.Properties['models']) { foreach ($p in $previous.models.PSObject.Properties) { $models[$p.Name]=$p.Value } }
-    $record=[ordered]@{version=3;status='partial';models=$models;connection=$connection;installedAt=(Get-Date).ToUniversalTime().ToString('o');node=$node;backend=$Backend;model=$Model;hermes=(Test-Path -LiteralPath (Join-Path $InstallRoot 'hermes\install-result.json'));configuredApp=[bool]$ConfigureApp;modelStarted=$false}
+    $record=[ordered]@{version=4;status='partial';models=$models;connection=$connection;installedAt=(Get-Date).ToUniversalTime().ToString('o');node=$node;backend='strata';profile=$StrataProfile;hermes=(Test-Path -LiteralPath (Join-Path $InstallRoot 'hermes\install-result.json'));configuredApp=[bool]$ConfigureApp;modelStarted=$false}
     Write-Receipt $record
     if ($Backend -eq 'existing' -and -not (Test-Path -LiteralPath (Join-Path $InstallRoot 'backend.txt'))) { Set-Content -LiteralPath (Join-Path $InstallRoot 'backend.txt') -Value $ExistingBackend -Encoding ASCII }
     Write-Host '[3/5] 선택한 모델 서버 준비 (설치 후 자동 시작하지 않음)'
-    $selectedBackends=@(if ($Backend -eq 'both') {@('vllm','ninfer')} elseif ($Backend -eq 'existing') {@()} else {@($Backend)})
-    foreach ($selected in $selectedBackends) {
-        Call-Backend 'Install' $selected
-        if($selected -eq 'strata') {
-            $strata=Get-Content -LiteralPath (Join-Path $InstallRoot 'strata\install.json') -Raw|ConvertFrom-Json
-            $record.connection.model=$strata.model;$record.connection.contextTokens=$strata.profile.contextTokens;$models[$selected]=$StrataProfile
-        } else { $models[$selected]=$Model }
+    if ($Backend -eq 'strata') {
+        Call-Backend 'Install' 'strata'
+        $strata=Get-Content -LiteralPath (Join-Path $InstallRoot 'strata\install.json') -Raw|ConvertFrom-Json
+        $record.connection.model=$strata.model;$record.connection.contextTokens=$strata.profile.contextTokens;$models['strata']=$StrataProfile
         Write-Receipt $record
-        if (-not (Test-Path -LiteralPath (Join-Path $InstallRoot 'backend.txt'))) { Set-Content -LiteralPath (Join-Path $InstallRoot 'backend.txt') -Value $selected -Encoding ASCII }
+        if (-not (Test-Path -LiteralPath (Join-Path $InstallRoot 'backend.txt'))) { Set-Content -LiteralPath (Join-Path $InstallRoot 'backend.txt') -Value 'strata' -Encoding ASCII }
     }
     Write-Host '[4/5] 선택한 Hermes 설치'
     if ($IncludeHermes) { Call-Installer 'hermes-install.ps1' @('-Action','Install','-InstallRoot',$InstallRoot);$record.hermes=$true;Write-Receipt $record }

@@ -10,7 +10,7 @@ if(!['quick','8k','32k','64k','224k'].includes(profile))throw Error('Profile: qu
 const base=config.queueUrl, controller=new AbortController();
 process.stdin.setEncoding('utf8');process.stdin.on('data',s=>{if(s.includes('cancel'))controller.abort(Error('사용자 취소'));});
 if(process.argv.includes('--ui'))process.stdin.on('end',()=>controller.abort(Error('실행 창 연결 종료')));
-const report={profile,backend,model:config.model,started_at:new Date().toISOString(),rows:[],notes:'클라이언트 측 스트리밍 측정. 대기열/HTTP 포함. decode는 청크 기반 추정이며 실제 토큰별 지연이 아님. 워밍업 제외. 캐시 초기화 없음. 64K는 입력+출력 합계 한도.'};
+const report={profile,backend,model:config.model,started_at:new Date().toISOString(),rows:[],notes:'클라이언트 측 스트리밍 측정. 대기열/HTTP 포함. decode는 청크 기반 추정이며 실제 토큰별 지연이 아님. 워밍업 제외. 캐시 초기화 없음. 문맥은 실제 Strata 용량과 출력 예약을 함께 확인.'};
 const dir=path.join(root,'token-tests'),id=Date.now()+'-'+randomUUID().slice(0,8),file=path.join(dir,id+'.json');
 let lock;
 const log=s=>console.log(s), fmt=n=>n===null?'—':n.toFixed(2);
@@ -21,7 +21,7 @@ async function run(name,prompt,max_tokens,warmup=false,expected=null,qualityOnly
   await idle();const row={name,warmup,quality_only:qualityOnly,status:'running'};report.rows.push(row);await save();log(name+' 시작…');
   const started=performance.now();let first=null;
   try{
-    const r=await fetch(base+'/v1/chat/completions',{method:'POST',headers:{'content-type':'application/json','x-qwen-source':'token-test'},signal:AbortSignal.any([controller.signal,AbortSignal.timeout(backend==='ninfer'?1800000:240000)]),body:JSON.stringify({model:config.model,messages:[{role:'user',content:prompt}],max_tokens,temperature:0,stream:true,stream_options:{include_usage:true}})});
+    const r=await fetch(base+'/v1/chat/completions',{method:'POST',headers:{'content-type':'application/json','x-qwen-source':'token-test'},signal:AbortSignal.any([controller.signal,AbortSignal.timeout(240000)]),body:JSON.stringify({model:config.model,messages:[{role:'user',content:prompt}],max_tokens,temperature:0,stream:true,stream_options:{include_usage:true}})});
     row.request_id=r.headers.get('x-qwen-request-id');if(!r.ok)throw Error('HTTP '+r.status+' '+(await r.text()).slice(0,300));
     const data=await readStream(r.body,async()=>{},()=>{first=(performance.now()-started)/1000;});
     Object.assign(row,metrics(data.usage?.prompt_tokens,data.usage?.completion_tokens,(performance.now()-started)/1000,first));
@@ -42,11 +42,9 @@ try{
   await fs.mkdir(dir,{recursive:true});
   // OS exclusive file creation prevents simultaneous runners; a crash leaves an explicit recoverable lock.
   try{lock=await fs.open(path.join(dir,'running.lock'),'wx');await lock.writeFile(String(process.pid));}catch{throw Error('토큰 테스트 실행 잠금이 있습니다. 실행 중인 테스트를 종료하거나, 프로세스 종료 확인 후 token-tests/running.lock을 제거하세요.');}
-  if(backend==='strata'){
-    const caps=await json(base+'/capabilities');
-    if(caps.backend!=='strata'||caps.model!==config.model||!caps.loaded||!caps.benchmark_profiles?.includes(profile))throw Error('실제 Strata 문맥 용량/모델/loaded 상태에 맞지 않는 검사입니다.');
-    report.context_tokens=caps.context_tokens;
-  }else if(profile==='224k'&&backend!=='ninfer')throw Error('224K 검사는 충분한 용량의 Strata 또는 ninfer 모드에서만 가능합니다.');
+  const caps=await json(base+'/capabilities');
+  if(caps.backend!=='strata'||caps.model!==config.model||!caps.loaded||!caps.benchmark_profiles?.includes(profile))throw Error('실제 Strata 문맥 용량/모델/loaded 상태에 맞지 않는 검사입니다.');
+  report.context_tokens=caps.context_tokens;
   await json(base+'/health');await idle();log('서버 준비 확인 · '+profile+' 테스트');
   await run('워밍업','Run '+randomUUID()+': Write the numbers one through ten.',32,true);
   if(profile==='quick'){

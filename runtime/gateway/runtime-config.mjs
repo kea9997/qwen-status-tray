@@ -17,9 +17,9 @@ export function readConfig(env = process.env) {
   if (!path.isAbsolute(appRoot)) throw Error('QWEN_APP_ROOT must be an absolute directory.');
   const port = Number(env.QWEN_QUEUE_PORT || 18022);
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw Error('QWEN_QUEUE_PORT must be 1–65535.');
-  const backend = (env.QWEN_BACKEND || 'vllm').toLowerCase();
-  if (!['vllm', 'ninfer', 'strata'].includes(backend)) throw Error('QWEN_BACKEND must be vllm, ninfer or strata.');
-  const model = env.QWEN_MODEL_ID || (backend==='strata'?'':'qwen3.8-27b');
+  const backend = (env.QWEN_BACKEND || 'strata').toLowerCase();
+  if (backend !== 'strata') throw Error('Only Strata is supported. Prepare an explicit Strata connection in a new installation directory.');
+  const model = env.QWEN_MODEL_ID || '';
   if (!model.trim() || /[\r\n]/.test(model)) throw Error('Invalid QWEN_MODEL_ID.');
   const absolute = (key, fallback) => {
     const value = env[key] || fallback;
@@ -51,7 +51,7 @@ export async function readBackend(config) {
   try{
     const buffer=Buffer.alloc(65),{bytesRead}=await file.read(buffer,0,65,0);
     const backend=buffer.subarray(0,bytesRead).toString('utf8').trim().toLowerCase();
-    if(bytesRead>64||!['vllm','ninfer','strata'].includes(backend))throw Error('QWEN_BACKEND_FILE must contain only vllm, ninfer or strata (up to 64 bytes).');
+    if(bytesRead>64||backend!=='strata')throw Error('QWEN_BACKEND_FILE must contain only strata (up to 64 bytes). Legacy installations are not migrated automatically.');
     return backend;
   }finally{await file.close();}
 }

@@ -1,7 +1,9 @@
 # Offline parser/profile/ownership tests. No model downloads, process starts, live ports or settings writes.
 $ErrorActionPreference='Stop'
 . (Join-Path $PSScriptRoot 'strata-common.ps1')
-$pins=(Get-Content -LiteralPath (Join-Path $PSScriptRoot 'backends.json') -Raw|ConvertFrom-Json).strata
+$manifest=Get-Content -LiteralPath (Join-Path $PSScriptRoot 'backends.json') -Raw|ConvertFrom-Json
+$pins=$manifest.strata
+if (@($manifest.PSObject.Properties.Name | Where-Object { $_ -notin @('schemaVersion','strata') }).Count) { throw 'Non-Strata profiles remain in the public manifest.' }
 function Assert([bool]$Condition,[string]$Message) { if (-not $Condition) { throw $Message } }
 function Reject([scriptblock]$Operation,[string]$Message) { $rejected=$false;try{& $Operation|Out-Null}catch{$rejected=$true};Assert $rejected $Message }
 Assert ((Strata-Origin 'http://127.0.0.1:8088') -eq 'http://127.0.0.1:8088') 'Explicit loopback attach failed'

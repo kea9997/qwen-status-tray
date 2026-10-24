@@ -14,8 +14,8 @@ class TokenTestWindow : Form {
   var layout=new TableLayoutPanel{Dock=DockStyle.Fill,Padding=new Padding(12),ColumnCount=1,RowCount=3};Controls.Add(layout);
   layout.RowStyles.Add(new RowStyle(SizeType.Absolute,42));layout.RowStyles.Add(new RowStyle(SizeType.Absolute,62));layout.RowStyles.Add(new RowStyle(SizeType.Percent,100));
   var bar=new FlowLayoutPanel{Dock=DockStyle.Fill};layout.Controls.Add(bar);
-  profile.DropDownStyle=ComboBoxStyle.DropDownList;profile.Width=205;foreach(string key in profileKeys)profile.Items.Add(key=="quick"?"빠른 속도 검사 (3회)":key.ToUpperInvariant()+" 문맥 검사");profile.SelectedIndex=0;bar.Controls.Add(profile);
-  start.Text="테스트 시작";start.AutoSize=true;start.Click+=(s,e)=>Start();bar.Controls.Add(start);
+  profile.DropDownStyle=ComboBoxStyle.DropDownList;profile.Width=205;foreach(string key in profileKeys)profile.Items.Add(key=="quick"?"빠른 속도 검사 (3회)":key.ToUpperInvariant()+" 문맥 검사");if(profile.Items.Count>0)profile.SelectedIndex=0;bar.Controls.Add(profile);
+  start.Text="테스트 시작";start.Enabled=profileKeys.Length>0;start.AutoSize=true;start.Click+=(s,e)=>Start();bar.Controls.Add(start);
   cancel.Text="취소";cancel.Enabled=false;cancel.Click+=(s,e)=>Cancel();bar.Controls.Add(cancel);
   var folder=new Button{Text="결과 폴더",AutoSize=true};folder.Click+=(s,e)=>{string path=System.IO.Path.Combine(Root,"token-tests");if(System.IO.Directory.Exists(path))Process.Start("explorer.exe",path);else MessageBox.Show("아직 토큰 테스트 결과 폴더가 없습니다.","Qwen");};bar.Controls.Add(folder);
   layout.Controls.Add(new Label{Dock=DockStyle.Fill,Text="서버를 수동으로 켜 둔 뒤 실행하세요. 다른 요청이 있으면 중단합니다.\r\n긴 문맥은 실제 용량이 확인된 서버에서만 가능합니다. 첫 입력 처리에 오래 걸릴 수 있습니다.\r\n전체 속도에는 입력 처리·대기 시간이 포함됩니다. 생성 속도는 스트리밍 기반 추정입니다."});
@@ -24,7 +24,7 @@ class TokenTestWindow : Form {
  }
  void Append(string text){if(IsDisposed||!IsHandleCreated)return;try{BeginInvoke((Action)(()=>{if(!IsDisposed)output.AppendText(text+Environment.NewLine);}));}catch(InvalidOperationException){}}
  void Start(){
-  if(runner!=null)return;output.Clear();
+  if(runner!=null)return;output.Clear();if(profile.SelectedIndex<0){Append("Strata 연결을 설치 도우미에서 먼저 준비하세요.");return;}
   if(!System.IO.File.Exists(System.IO.Path.Combine(Root,"token-test.mjs"))){Append("토큰 테스트 도구를 찾지 못했습니다. 설정된 대기열 설치를 확인하세요.");return;}
   var info=new ProcessStartInfo(NodeExe(),"\""+Root+"\\token-test.mjs\" "+profileKeys[profile.SelectedIndex]+" --ui"){WorkingDirectory=Root,UseShellExecute=false,CreateNoWindow=true,RedirectStandardOutput=true,RedirectStandardError=true,RedirectStandardInput=true,StandardErrorEncoding=Encoding.UTF8,StandardOutputEncoding=Encoding.UTF8};
   try{QwenStatus.RuntimeEnvironment(info);}catch(Exception ex){Append("런타임 연결 설정 확인 필요: "+ex.Message);return;}
