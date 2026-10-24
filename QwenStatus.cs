@@ -33,7 +33,7 @@ partial class QwenStatus : Form {
  static readonly string QueueUrl=Setting("queueUrl","http://127.0.0.1:18022/queue");
  static readonly string PrivacyFile=Path.Combine(DataRoot,"hide-content.txt");
  Label state=new Label(), note=new Label(), usage=new Label(), rate=new Label(); Button usageButton=new Button(); CheckBox hideContentBox=new CheckBox();
- Button start=new Button(), stop=new Button();
+ Button start=new Button(), stop=new Button(); ToolStripMenuItem startMenu,stopMenu;
  static readonly string Jobs=SettingPath("jobsDirectory",Path.Combine(RuntimePath("worker"),"jobs"));
  static Dictionary<string,object> LoadSettings(){if(OfflineTest)return new Dictionary<string,object>{{"backend","strata"},{"modelId","fixture-flash-next"},{"contextTokens",262144},{"serverUrl","http://127.0.0.1:1/"},{"queueUrl","http://127.0.0.1:1/queue"},{"gatewayDirectory",Path.Combine(DataRoot,"gateway")},{"jobsDirectory",Path.Combine(DataRoot,"jobs")},{"backendFile",Path.Combine(DataRoot,"backend.txt")},{"managedInstallRoot",Path.Combine(DataRoot,"managed")}};try{string path=Path.Combine(DataRoot,"settings.json");return File.Exists(path)?new JavaScriptSerializer().Deserialize<Dictionary<string,object>>(File.ReadAllText(path)):new Dictionary<string,object>();}catch{return new Dictionary<string,object>();}}
  static string Setting(string key,string fallback){object value;return Settings.TryGetValue(key,out value)&&value!=null&&!string.IsNullOrWhiteSpace(value.ToString())?value.ToString():fallback;}
@@ -206,8 +206,8 @@ partial class QwenStatus : Form {
   Label title=new Label{Text="Qwen 서버",Bounds=new Rectangle(24,18,640,32),Font=new Font(Font.FontFamily,18,FontStyle.Bold)};Controls.Add(title);
   state.Bounds=new Rectangle(24,60,640,40);state.Font=new Font(Font.FontFamily,21,FontStyle.Bold);Controls.Add(state);
   note.Bounds=new Rectangle(26,106,640,38);note.ForeColor=Color.DimGray;Controls.Add(note);
-  start.Text="▶ 서버 켜기";start.Bounds=new Rectangle(24,151,310,43);start.Click+=async(s,e)=>await StartServer();Controls.Add(start);
-  stop.Text="■ 서버 끄기";stop.Bounds=new Rectangle(354,151,310,43);stop.Click+=async(s,e)=>await StopServer();Controls.Add(stop);
+  start.Text="▶ 서버 켜기";start.Enabled=false;start.Bounds=new Rectangle(24,151,310,43);start.Click+=async(s,e)=>await StartServer();Controls.Add(start);
+  stop.Text="■ 서버 끄기";stop.Enabled=false;stop.Bounds=new Rectangle(354,151,310,43);stop.Click+=async(s,e)=>await StopServer();Controls.Add(stop);
   usage.Bounds=new Rectangle(24,213,515,57);usage.Font=new Font("Malgun Gothic",9);Controls.Add(usage);
   usageButton.Text="누적 통계";usageButton.Bounds=new Rectangle(551,218,113,44);usageButton.Click+=(s,e)=>OpenUsage();Controls.Add(usageButton);
   rate.Bounds=new Rectangle(24,278,640,42);rate.ForeColor=Color.DimGray;Controls.Add(rate);
@@ -234,7 +234,7 @@ partial class QwenStatus : Form {
   menu.Items.Add("설치 도우미 / AI 설치",null,(s,e)=>OpenInstaller());
   menu.Items.Add("프로젝트 · 후원 안내",null,(s,e)=>OpenSupport());
   var alertsMenu=new ToolStripMenuItem("중요 알림"){Checked=notifyEnabled,CheckOnClick=true};alertsMenu.CheckedChanged+=(s,e)=>SetNotifyPreference(alertsMenu.Checked);menu.Items.Add(alertsMenu);
-  menu.Items.Add("서버 켜기",null,async(s,e)=>await StartServer());menu.Items.Add("서버 끄기",null,async(s,e)=>await StopServer());
+  startMenu=(ToolStripMenuItem)menu.Items.Add("서버 켜기",null,async(s,e)=>await StartServer());stopMenu=(ToolStripMenuItem)menu.Items.Add("서버 끄기",null,async(s,e)=>await StopServer());startMenu.Enabled=stopMenu.Enabled=false;
   menu.Items.Add("상태 앱만 종료",null,(s,e)=>{quitting=true;Close();});
   tray.ContextMenuStrip=menu;tray.Icon=icons[4];tray.Text="Qwen 상태";tray.Visible=true;tray.MouseClick+=(s,e)=>{if(e.Button==MouseButtons.Left)Restore();};
   FormClosing+=(s,e)=>{if(!quitting&&e.CloseReason==CloseReason.UserClosing){e.Cancel=true;Hide();}};
@@ -265,7 +265,8 @@ partial class QwenStatus : Form {
  }
  void OpenRequest(bool agent){
   if(!agent){OpenChat();return;}
-  try{if(OpenManagedHermes())return;}catch(Exception ex){MessageBox.Show(ex.Message,"Hermes 실행 실패");return;}
+  if(OfflineTest)return;
+  try{if(OpenExplicitHermes()||OpenManagedHermes())return;}catch(Exception ex){MessageBox.Show(ex.Message,"Hermes 실행 실패");return;}
   string script=Path.Combine(Root,"open-hermes.cmd");
   if(!File.Exists(script)){MessageBox.Show("실행 도구를 찾지 못했습니다: "+script,"Qwen");return;}
   string work=Path.GetFullPath(Path.Combine(Root,"..","QwenWork"));if(!Directory.Exists(work))work=Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
@@ -385,9 +386,14 @@ partial class QwenStatus : Form {
   Text="Qwen "+BackendLabel()+" · "+names[status];state.Text=names[status]+" · "+BackendLabel();state.ForeColor=new Color[]{Color.SlateGray,Color.RoyalBlue,Color.SeaGreen,Color.DarkOrange,Color.Firebrick}[status];
   Icon=icons[status];tray.Icon=icons[status];tray.Text=Text;
   note.Text=status==0?"Codex가 직접 처리합니다.":status==1?"모델을 준비하고 있습니다.":status==3?string.Format("처리 {0}건 · 대기 {1}건",running,waiting):status==2?"필요한 작업을 Codex가 Qwen에 위임합니다.":"서버는 응답하지만 요청 통계를 읽지 못했습니다.";
-  if(Backend()=="strata")note.Text=(string.IsNullOrEmpty(reportedModel)?Setting("modelId","모델 확인 중"):reportedModel)+" · 문맥 "+(double.IsNaN(reportedContext)?"미확인":reportedContext.ToString("N0"))+"\r\n"+(ExternalStrata()?"기존 서버 연결 · 시작/종료는 원래 서버에서 직접 수행":status==1?"프로세스 준비 중 · loaded 확인 전에는 요청하지 않습니다.":note.Text);
+  bool controlled=ExternalControlAvailable();
+  string externalHelp=controlled?(status==1?"외부 자동 관리 · 모델 미준비 · GPU 양보 가능 (loaded 확인 필요)":"외부 자동 관리 · 재개/일시정지만 요청 · 준비 여부는 실제 loaded 기준"):Setting("externalControllerScript","")!=""?"외부 제어 설정 확인 필요 · 절대 경로의 기존 .ps1을 지정하세요.":"기존 서버 연결 · 시작/종료는 원래 서버에서 직접 수행";
+  if(controlled&&action)externalHelp="기존 자동 관리자 응답 대기 중 · 엔진을 직접 제어하지 않습니다.";
+  if(Backend()=="strata")note.Text=(string.IsNullOrEmpty(reportedModel)?Setting("modelId","모델 확인 중"):reportedModel)+" · 문맥 "+(double.IsNaN(reportedContext)?"미확인":reportedContext.ToString("N0"))+"\r\n"+(ExternalStrata()?externalHelp:status==1?"프로세스 준비 중 · loaded 확인 전에는 요청하지 않습니다.":note.Text);
   if(Backend()!="strata")note.Text="지원하지 않는 백엔드 설정입니다. 설치 도우미에서 새 전용 폴더에 Strata 연결을 준비하세요. 기존 설치는 변경하지 않습니다.";
-  start.Enabled=!action&&status==0&&Backend()=="strata"&&!ExternalStrata()&&ManagedInstall();stop.Enabled=!action&&status!=0&&Backend()=="strata"&&!ExternalStrata()&&ManagedInstall();
+  start.Text=controlled?"▶ 자동 관리 재개":"▶ 서버 켜기";stop.Text=controlled?"■ 자동 관리 일시정지":"■ 서버 끄기";
+  start.Enabled=!action&&(controlled||(status==0&&Backend()=="strata"&&!ExternalStrata()&&ManagedInstall()));stop.Enabled=!action&&(controlled||(status!=0&&Backend()=="strata"&&!ExternalStrata()&&ManagedInstall()));
+  startMenu.Text=start.Text;stopMenu.Text=stop.Text;startMenu.Enabled=start.Enabled;stopMenu.Enabled=stop.Enabled;
   UpdateUsageText(input,output);
   rate.Text=(Backend()=="strata"?"입력 "+(double.IsNaN(nativeInputSpeed)?"—":nativeInputSpeed.ToString("N1"))+" · 출력 "+(double.IsNaN(speed)?"—":speed.ToString("N1"))+" tok/s (서버 제공)":double.IsNaN(speed)?"서버 출력 속도 —":string.Format("서버 출력 속도 {0:N1} tok/s",speed))+"\n"+gpuText;
   UpdateMini(status,speed,running,waiting);
@@ -428,11 +434,22 @@ partial class QwenStatus : Form {
   int status=Classify(live,loading,data[1],data[2]);Display(status,data[3],data[4],speed,data[1],data[2]);CheckImportantEvents(status);
   if(Visible)RefreshJobs();
  }catch(Exception ex){note.Text=ex.Message;}finally{polling=false;}}
- async Task StartServer(){if(action||OfflineTest)return;if(Backend()!="strata"||ExternalStrata()){OpenInstaller();return;}action=true;start.Enabled=stop.Enabled=false;try{
+ async Task RequestExternalMode(string mode){
+  if(action||OfflineTest)return;
+  action=true;start.Enabled=stop.Enabled=startMenu.Enabled=stopMenu.Enabled=false;suppressOfflineUntil=DateTime.UtcNow.AddMinutes(2);note.Text=mode=="auto"?"기존 자동 관리자에 재개 요청 중…":"기존 자동 관리자에 일시정지 요청 중…";
+  try{
+   Task<int> completion=Task.Run(()=>{using(var process=RunExternalController(mode)){process.WaitForExit();return process.ExitCode;}});
+   if(await Task.WhenAny(completion,Task.Delay(65000))!=completion)MessageBox.Show("기존 자동 관리자의 응답이 65초 이상 지연되고 있습니다. 강제 종료하지 않고 계속 기다립니다.\n상세 로그: "+ManagedLog(),"외부 자동 관리");
+   int code=await completion;if(code!=0)throw new Exception("기존 자동 관리 요청이 실패했습니다. 종료 코드 "+code+"\n상세 로그: "+ManagedLog());
+   requested=DateTime.MinValue;
+  }catch(Exception ex){MessageBox.Show(ex.Message,"외부 자동 관리");}finally{action=false;}
+  await Poll();
+ }
+ async Task StartServer(){if(action||OfflineTest)return;if(ExternalStrata()){if(ExternalControlAvailable())await RequestExternalMode("auto");else OpenInstaller();return;}if(Backend()!="strata"){OpenInstaller();return;}action=true;start.Enabled=stop.Enabled=false;try{
   bool exists=await Task.Run(()=>{try{Get("health");return true;}catch{return false;}});
   if(!exists){if(!ManagedInstall())throw new Exception("설치 도우미에서 Strata 모델 서버를 먼저 준비하세요.");server=RunManaged("StartBackend");requested=DateTime.UtcNow;bool ended=await Task.Run(()=>server.WaitForExit(30000));if(ended&&server.ExitCode!=0)throw new Exception("서버 시작 실패. 설치 도우미에서 연결을 확인하세요.\n상세 로그: "+ManagedLog());}
  }catch(Exception ex){MessageBox.Show(ex.Message,"Qwen");}finally{action=false;}await Poll();}
- async Task StopServer(){if(action||OfflineTest||ExternalStrata())return;action=true;suppressOfflineUntil=DateTime.UtcNow.AddMinutes(2);start.Enabled=stop.Enabled=false;note.Text="서버 종료 중…";try{if(!ManagedInstall())throw new Exception("Strata 서버 종료 구성이 없습니다.");using(var p=RunManaged("StopBackend")){bool ended=await Task.Run(()=>p.WaitForExit(45000));if(!ended||p.ExitCode!=0)throw new Exception("서버 종료를 확인하지 못했습니다.\n관리 설치 로그: "+ManagedLog());}requested=DateTime.MinValue;}catch(Exception ex){MessageBox.Show(ex.Message,"Qwen");}finally{action=false;}await Poll();}
+ async Task StopServer(){if(action||OfflineTest)return;if(ExternalStrata()){if(ExternalControlAvailable())await RequestExternalMode("paused");return;}action=true;suppressOfflineUntil=DateTime.UtcNow.AddMinutes(2);start.Enabled=stop.Enabled=false;note.Text="서버 종료 중…";try{if(!ManagedInstall())throw new Exception("Strata 서버 종료 구성이 없습니다.");using(var p=RunManaged("StopBackend")){bool ended=await Task.Run(()=>p.WaitForExit(45000));if(!ended||p.ExitCode!=0)throw new Exception("서버 종료를 확인하지 못했습니다.\n관리 설치 로그: "+ManagedLog());}requested=DateTime.MinValue;}catch(Exception ex){MessageBox.Show(ex.Message,"Qwen");}finally{action=false;}await Poll();}
  static void HistoryRecoveryTest(string root){
   string directory=Path.Combine(root,"late-requests");var changes=new ConcurrentQueue<string>();DateTime now=DateTime.UtcNow;
   using(var watcher=new JobWatcher(directory,path=>changes.Enqueue(path))){
@@ -556,6 +573,7 @@ partial class QwenStatus : Form {
    using(var app=new QwenStatus())using(var showTimer=new System.Windows.Forms.Timer()){
     // Keep a real window handle on the UI thread even during tray-only startup.
     IntPtr handle=app.Handle; UiLog("window handle ready");
+    if(!OfflineTest)app.BeginInvoke((Action)(async()=>await app.StartQueueWithApp()));
     if(!File.Exists(Path.Combine(DataRoot,"settings.json"))&&!File.Exists(Path.Combine(DataRoot,"first-run-seen.txt"))){File.WriteAllText(Path.Combine(DataRoot,"first-run-seen.txt"),DateTime.UtcNow.ToString("o"));app.BeginInvoke((Action)(()=>app.OpenSetup()));}
     var context=new ApplicationContext();app.FormClosed+=(s,e)=>context.ExitThread();
     showTimer.Interval=200;showTimer.Tick+=(s,e)=>{if(showRequest.WaitOne(0))app.Restore();};showTimer.Start();

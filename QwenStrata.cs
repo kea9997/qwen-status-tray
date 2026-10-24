@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Drawing;
 using System.IO;
 using System.Linq;
@@ -69,6 +70,61 @@ partial class QwenStatus {
   if(File.Exists(receipt)){var c=ObjectAt(new JavaScriptSerializer().Deserialize<Dictionary<string,object>>(File.ReadAllText(receipt)),"connection");if(c!=null&&Field(c,"backend")==backend){info.EnvironmentVariables["QWEN_MODEL_ID"]=Field(c,"model");info.EnvironmentVariables["QWEN_UPSTREAM_URL"]=Field(c,"upstream");info.EnvironmentVariables["QWEN_CONTEXT_TOKENS"]=Field(c,"contextTokens");}}
  }
  double reportedContext=double.NaN,nativeInputSpeed=double.NaN;string reportedModel="";
+ static void ScriptSettingsTest(QwenStatus app){
+  string[] keys={"hermesLaunchScript","externalControllerScript","setupPowerShell","serverOwnership","backend","managedInstallRoot","startQueueWithApp"};
+  var prior=keys.Where(Settings.ContainsKey).ToDictionary(key=>key,key=>Settings[key]);
+  string directory=Path.Combine(DataRoot,"script fixtures "+Guid.NewGuid().ToString("N")),script=Path.Combine(directory,"existing launcher.PS1"),other=Path.Combine(directory,"not-a-script.txt"),owned=Path.Combine(directory,"owned");
+  Directory.CreateDirectory(Path.Combine(owned,"setup"));
+  File.WriteAllText(script,"# Offline path fixture only. Never execute.");File.WriteAllText(other,"Offline path fixture only.");
+  File.WriteAllText(Path.Combine(owned,"setup-state.json"),"{}");File.WriteAllText(Path.Combine(owned,"setup","setup.ps1"),"# Offline ownership fixture only. Never execute.");
+  Action<Action,string> rejects=(check,message)=>{bool refused=false;try{check();}catch(ArgumentException){refused=true;}if(!refused)throw new Exception(message);};
+  try{
+   Settings["backend"]="strata";Settings["serverOwnership"]="external";Settings["setupPowerShell"]="fixture-shell.exe";Settings["managedInstallRoot"]=owned;
+   Settings.Remove("startQueueWithApp");object enabled;Settings.TryGetValue("startQueueWithApp",out enabled);
+   if(QueueStartupAllowed(enabled,Backend(),ManagedInstall(),false))throw new Exception("Queue startup enabled by default");
+   foreach(object value in new object[]{null,false,"true","false",1,0})if(QueueStartupAllowed(value,Backend(),ManagedInstall(),false))throw new Exception("Queue startup accepted non-boolean opt-in or false");
+   Settings["startQueueWithApp"]=true;Settings.TryGetValue("startQueueWithApp",out enabled);
+   if(!ManagedInstall()||!QueueStartupAllowed(enabled,Backend(),ManagedInstall(),false))throw new Exception("Explicit queue startup opt-in rejected for valid external attachment");
+   if(QueueStartupAllowed(enabled,"unsupported",true,false)||QueueStartupAllowed(enabled,Backend(),false,false)||QueueStartupAllowed(enabled,Backend(),ManagedInstall(),true)||QueueStartupAllowed(enabled,Backend(),ManagedInstall(),OfflineTest))throw new Exception("Queue startup ignored backend/install/offline guards");
+   Settings["managedInstallRoot"]=directory;if(ManagedInstall()||QueueStartupAllowed(enabled,Backend(),ManagedInstall(),false))throw new Exception("Queue startup accepted incomplete install");Settings["managedInstallRoot"]=owned;
+   if(app.queueStartupChecked)throw new Exception("Queue startup was scheduled by offline constructor");
+   Settings.Remove("hermesLaunchScript");Settings.Remove("externalControllerScript");
+   if(HermesLaunchInfo()!=null||ExternalControlAvailable())throw new Exception("Optional scripts enabled without explicit settings");
+   app.Display(0,double.NaN,double.NaN,double.NaN,0,0);if(app.start.Enabled||app.stop.Enabled||app.startMenu.Enabled||app.stopMenu.Enabled)throw new Exception("No-config external controls enabled by managed receipt");
+   Settings["hermesLaunchScript"]="";Settings["externalControllerScript"]="";
+   if(HermesLaunchInfo()!=null||ExternalControlAvailable())throw new Exception("Empty optional scripts enabled");
+   foreach(string invalid in new[]{Path.GetFileName(script),@"C:launcher.ps1",@"\launcher.ps1",Path.Combine(directory,"missing.ps1"),directory,other,script+"\" -Mode auto",script+"'",script+"\r",script+"\n",script+" -Mode paused"}){
+    Settings["hermesLaunchScript"]=invalid;Settings["externalControllerScript"]=invalid;
+    rejects(()=>{HermesLaunchInfo();},"Invalid Hermes script accepted: "+invalid);
+    rejects(()=>{ExternalControllerInfo("auto");},"Invalid controller script accepted: "+invalid);
+    if(ExternalControlAvailable())throw new Exception("Invalid external controller enabled lifecycle");
+    app.Display(0,double.NaN,double.NaN,double.NaN,0,0);
+    if(app.start.Enabled||app.stop.Enabled||app.startMenu.Enabled||app.stopMenu.Enabled)throw new Exception("Invalid script enabled external controls despite managed receipt");
+   }
+   Settings["hermesLaunchScript"]=script;Settings["externalControllerScript"]=script;
+   var hermes=HermesLaunchInfo();
+   if(hermes.FileName!="fixture-shell.exe"||hermes.Arguments!="-NoLogo -NoProfile -NoExit -File \""+script+"\""||hermes.WorkingDirectory!=directory||hermes.UseShellExecute||hermes.CreateNoWindow||hermes.WindowStyle!=ProcessWindowStyle.Normal)throw new Exception("Explicit Hermes terminal arguments/visibility changed");
+   foreach(string mode in new[]{"auto","paused"}){
+    var info=ExternalControllerInfo(mode);
+    if(info.FileName!="fixture-shell.exe"||info.Arguments!="-NoProfile -File \""+script+"\" -Mode "+mode||info.WorkingDirectory!=directory||info.UseShellExecute||!info.CreateNoWindow||info.WindowStyle!=ProcessWindowStyle.Hidden)throw new Exception("External controller arguments/visibility changed");
+   }
+   foreach(string invalid in new[]{"","Auto","stop","auto -Mode paused","paused\r\n","paused; whoami"})rejects(()=>{ExternalControllerInfo(invalid);},"Unsupported controller mode accepted");
+   if(!ExternalControlAvailable()||HealthLoaded("{\"service\":\"strata\",\"model\":\"fixture-flash-next\",\"max_context\":32768,\"loaded\":false}"))throw new Exception("Controller availability fabricated model readiness");
+   foreach(int status in new[]{0,1,2,3,4}){
+    app.Display(status,double.NaN,double.NaN,double.NaN,0,0);
+    if(!app.start.Enabled||!app.stop.Enabled||!app.startMenu.Enabled||!app.stopMenu.Enabled||!app.start.Text.Contains("자동 관리 재개")||!app.stop.Text.Contains("자동 관리 일시정지")||app.startMenu.Text!=app.start.Text||app.stopMenu.Text!=app.stop.Text||!app.note.Text.Contains("loaded"))throw new Exception("Explicit external lifecycle UI incorrect");
+    if(status==1&&!app.state.Text.StartsWith("준비 중"))throw new Exception("Unloaded external model shown ready");
+    using(var image=new Bitmap(app.Width,app.Height)){app.DrawToBitmap(image,new Rectangle(Point.Empty,image.Size));image.Save(Path.Combine(DataRoot,"strata-external-controller-"+status+".png"));}
+   }
+   app.action=true;app.Display(1,double.NaN,double.NaN,double.NaN,0,0);
+   if(app.start.Enabled||app.stop.Enabled||app.startMenu.Enabled||app.stopMenu.Enabled||!app.note.Text.Contains("응답 대기"))throw new Exception("External controls enabled while busy");app.action=false;
+   Settings["serverOwnership"]="managed";
+   if(ExternalControlAvailable())throw new Exception("External controller used for native ownership");
+   bool refused=false;try{ExternalControllerInfo("auto");}catch(InvalidOperationException){refused=true;}if(!refused)throw new Exception("Native install accepted external controller");
+   foreach(int status in new[]{0,2}){app.Display(status,double.NaN,double.NaN,double.NaN,0,0);if(app.start.Enabled!=(status==0)||app.stop.Enabled!=(status!=0)||app.start.Text.Contains("자동 관리"))throw new Exception("Native owned lifecycle changed");}
+   Settings["backend"]="unsupported";app.Display(0,double.NaN,double.NaN,double.NaN,0,0);if(ExternalControlAvailable()||app.start.Enabled||app.stop.Enabled)throw new Exception("Controller enabled unsupported backend");
+  }finally{app.action=false;foreach(string key in keys){if(prior.ContainsKey(key))Settings[key]=prior[key];else Settings.Remove(key);}}
+ }
  static void StrataTest(){
   const string idle="{\"engine\":{\"model\":\"fixture-flash-next\",\"max_context\":32768},\"live\":{\"state\":\"idle\",\"queued\":0,\"tok_s\":null},\"totals\":{\"prompt_tokens\":123,\"output_tokens\":45}}";
   if(Metric(idle,"generation_tokens_total")!=45||Metric(idle,"prompt_tokens_total")!=123||Metric(idle,"num_requests_running")!=0||!double.IsNaN(Metric(idle,"generation_tokens_per_second"))||!double.IsNaN(Metric(idle,"gpu_cache_usage_perc")))throw new Exception("Strata JSON mapping fabricated or lost metrics");
@@ -90,14 +146,15 @@ partial class QwenStatus {
    app.reportedModel="fixture-flash-next";app.reportedContext=32768;
    foreach(int s in new[]{2,1,4,0,3}){
     app.Display(s,123,45,double.NaN,s==3?1:0,0);
-    if(app.start.Enabled||app.stop.Enabled)throw new Exception("External Strata lifecycle enabled");
+    if(app.start.Enabled||app.stop.Enabled||app.startMenu.Enabled||app.stopMenu.Enabled)throw new Exception("External Strata lifecycle enabled");
     if(!app.note.Text.Contains(32768.ToString("N0")))throw new Exception("Actual Strata context missing from status");
     app.Show();Application.DoEvents();using(var image=new Bitmap(app.Width,app.Height)){app.DrawToBitmap(image,new Rectangle(Point.Empty,image.Size));image.Save(Path.Combine(DataRoot,"strata-status-"+s+".png"));}
    }
+   ScriptSettingsTest(app);app.Display(0,double.NaN,double.NaN,double.NaN,0,0);if(app.start.Enabled||app.stop.Enabled||app.startMenu.Enabled||app.stopMenu.Enabled||ExternalControlAvailable())throw new Exception("No-config external lifecycle changed after script fixtures");
    Settings["serverOwnership"]="managed";app.action=true;app.Display(1,double.NaN,double.NaN,double.NaN,0,0);if(app.start.Enabled||app.stop.Enabled)throw new Exception("Actions enabled during loading operation");app.action=false;
    app.quitting=true;app.Close();
   }
   Settings.Remove("backend");Settings.Remove("serverOwnership");Settings.Remove("modelId");
-  File.WriteAllText(Path.Combine(DataRoot,"strata-test.txt"),"PASS: Strata JSON metrics, missing native rates, loadedfalse, endpoint-aware model/gateway readiness, external lifecycle, loading actions and offline state previews");
+  File.WriteAllText(Path.Combine(DataRoot,"strata-test.txt"),"PASS: Strata JSON metrics, missing native rates, loadedfalse, endpoint-aware model/gateway readiness, no-config external lifecycle, optional script path/argument/visibility guards, fixed external modes, native ownership, explicit boolean queue-startup/backend/install/offline guards, busy controls and offline state previews (fixture scripts never executed)");
  }
 }

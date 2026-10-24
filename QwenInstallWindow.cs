@@ -20,11 +20,65 @@ partial class QwenStatus {
   foreach(string path in (Environment.GetEnvironmentVariable("PATH")??"").Split(Path.PathSeparator)){try{string file=Path.Combine(path,"pwsh.exe");if(File.Exists(file))return file;}catch(ArgumentException){}}
   return "powershell.exe";
  }
+ static bool QueueStartupAllowed(object enabled,string backend,bool installed,bool offline){return enabled is bool&&(bool)enabled&&backend=="strata"&&installed&&!offline;}
+ bool queueStartupChecked;
+ async Task StartQueueWithApp(){
+  if(OfflineTest||queueStartupChecked)return;queueStartupChecked=true;
+  try{
+   object enabled;if(!Settings.TryGetValue("startQueueWithApp",out enabled)||!(enabled is bool)||!(bool)enabled)return;
+   if(!QueueStartupAllowed(enabled,Backend(),ManagedInstall(),OfflineTest))return;
+   int code=await Task.Run(()=>{using(var process=RunManaged("StartGateway")){if(!process.WaitForExit(30000))throw new TimeoutException("대기열 시작 응답이 30초를 초과했습니다. 프로세스를 강제 종료하지 않았습니다.");return process.ExitCode;}});
+   if(code!=0)throw new InvalidOperationException("대기열 시작 요청이 실패했습니다. 종료 코드 "+code);
+   RecordManaged("app startup queue: completed");
+  }catch(Exception ex){
+   string message="대기열 자동 시작 실패: "+ex.Message;
+   UiLog(message);try{RecordManaged(message);}catch(Exception logError){UiLog("queue startup log failed: "+logError.Message);}
+   if(!IsDisposed&&!quitting)MessageBox.Show(this,message+"\n상세 로그: "+ManagedLog(),"대기열 자동 시작 실패",MessageBoxButtons.OK,MessageBoxIcon.Warning);
+  }
+ }
  static Process RunManaged(string action){
   if(Backend()!="strata")throw new InvalidOperationException("Strata만 지원합니다. 설치 도우미에서 새 전용 폴더에 연결을 준비하세요.");
   var info=new ProcessStartInfo(SetupShell(),"-NoProfile -File \""+Path.Combine(ManagedRoot(),"setup","setup.ps1")+"\" -Action "+action+" -InstallRoot \""+ManagedRoot()+"\" -Backend strata"){UseShellExecute=false,CreateNoWindow=true,WindowStyle=ProcessWindowStyle.Hidden};
+  return RunLogged(info,action);
+ }
+ static string OptionalScriptPath(string key){
+  string path=Setting(key,"");if(string.IsNullOrWhiteSpace(path))return null;
+  if(path.IndexOfAny(new[]{'"','\'','\r','\n'})>=0)throw new ArgumentException(key+": 경로에 따옴표 또는 줄바꿈을 넣을 수 없습니다.");
+  string root=Path.GetPathRoot(path);
+  if(!Path.IsPathRooted(path)||string.IsNullOrEmpty(root)||root=="\\"||root=="/"||root.EndsWith(":"))throw new ArgumentException(key+": 절대 경로의 기존 .ps1 파일을 지정하세요.");
+  path=Path.GetFullPath(path);
+  if(!string.Equals(Path.GetExtension(path),".ps1",StringComparison.OrdinalIgnoreCase)||!File.Exists(path))throw new ArgumentException(key+": 절대 경로의 기존 .ps1 파일을 지정하세요.");
+  return path;
+ }
+ static ProcessStartInfo HermesLaunchInfo(){
+  string path=OptionalScriptPath("hermesLaunchScript");if(path==null)return null;
+  return new ProcessStartInfo(SetupShell(),"-NoLogo -NoProfile -NoExit -File \""+path+"\""){UseShellExecute=false,CreateNoWindow=false,WindowStyle=ProcessWindowStyle.Normal,WorkingDirectory=Path.GetDirectoryName(path)};
+ }
+ static bool OpenExplicitHermes(){
+  var info=HermesLaunchInfo();if(info==null)return false;
+  if(OfflineTest)throw new InvalidOperationException("Offline tests must not launch Hermes.");
+  Process.Start(info);return true;
+ }
+ static bool ExternalControlAvailable(){
+  if(!ExternalStrata())return false;
+  try{return OptionalScriptPath("externalControllerScript")!=null;}catch(Exception){return false;}
+ }
+ static ProcessStartInfo ExternalControllerInfo(string mode){
+  if(mode!="auto"&&mode!="paused")throw new ArgumentException("외부 자동 관리 모드는 auto 또는 paused만 허용합니다.");
+  if(!ExternalStrata())throw new InvalidOperationException("외부 Strata 연결에서만 기존 자동 관리자에게 요청할 수 있습니다.");
+  string path=OptionalScriptPath("externalControllerScript");if(path==null)throw new InvalidOperationException("외부 자동 관리 스크립트가 명시되지 않았습니다.");
+  return new ProcessStartInfo(SetupShell(),"-NoProfile -File \""+path+"\" -Mode "+mode){UseShellExecute=false,CreateNoWindow=true,WindowStyle=ProcessWindowStyle.Hidden,WorkingDirectory=Path.GetDirectoryName(path)};
+ }
+ static Process RunExternalController(string mode){
+  if(OfflineTest)throw new InvalidOperationException("Offline tests must not run external control operations.");
+  return RunLogged(ExternalControllerInfo(mode),"external "+mode);
+ }
+ static void RecordManaged(string message){
   Directory.CreateDirectory(Path.GetDirectoryName(ManagedLog()));
-  lock(managedLogLock)File.AppendAllText(ManagedLog(),Environment.NewLine+DateTime.UtcNow.ToString("o")+" "+action+Environment.NewLine,Encoding.UTF8);
+  lock(managedLogLock)File.AppendAllText(ManagedLog(),Environment.NewLine+DateTime.UtcNow.ToString("o")+" "+message+Environment.NewLine,Encoding.UTF8);
+ }
+ static Process RunLogged(ProcessStartInfo info,string action){
+  RecordManaged(action);
   info.RedirectStandardOutput=info.RedirectStandardError=true;info.StandardOutputEncoding=info.StandardErrorEncoding=Encoding.UTF8;
   var process=new Process{StartInfo=info};DataReceivedEventHandler record=(s,e)=>{if(e.Data!=null)try{lock(managedLogLock)File.AppendAllText(ManagedLog(),e.Data+Environment.NewLine,Encoding.UTF8);}catch(IOException){}};
   process.OutputDataReceived+=record;process.ErrorDataReceived+=record;process.Start();process.BeginOutputReadLine();process.BeginErrorReadLine();return process;

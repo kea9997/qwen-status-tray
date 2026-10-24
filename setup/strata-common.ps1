@@ -57,6 +57,23 @@ function Strata-Profile($Pins,[string]$Profile,[int]$ContextTokens=262144,[int]$
     if ($Prefill -ne 'auto' -and ($Prefill -notmatch '^\d+$' -or [long]$Prefill -lt 512 -or [long]$Prefill -gt 262144)) { throw 'prefill은 auto 또는 512~262144입니다.' }
     return [ordered]@{quant=$Profile;contextTokens=$ContextTokens;poolWorkers=$PoolWorkers;residentBudgetGiB=$ResidentBudgetGiB;prefill=$Prefill;kv='int8';kvResident=[math]::Min(32768,$ContextTokens);spec=4;specMinP='0.5';vramReserveMiB=1280;draftVocab='cjk'}
 }
+function Strata-SameInstant($Left,$Right) {
+    $ticks=@()
+    foreach ($value in @($Left,$Right)) {
+        if ($value -is [DateTimeOffset]) { $ticks+=$value.UtcDateTime.Ticks }
+        elseif ($value -is [DateTime]) {
+            if ($value.Kind -eq [DateTimeKind]::Unspecified) { return $false }
+            $ticks+=$value.ToUniversalTime().Ticks
+        } elseif ($value -is [string]) {
+            $parsed=[DateTimeOffset]::MinValue
+            # Require an explicit zone and all seven fractional digits from the saved roundtrip format.
+            $formats=[string[]]@("yyyy-MM-dd'T'HH:mm:ss.fffffff'Z'","yyyy-MM-dd'T'HH:mm:ss.fffffffzzz")
+            if (-not [DateTimeOffset]::TryParseExact($value,$formats,[Globalization.CultureInfo]::InvariantCulture,[Globalization.DateTimeStyles]::AssumeUniversal,[ref]$parsed)) { return $false }
+            $ticks+=$parsed.UtcDateTime.Ticks
+        } else { return $false }
+    }
+    return $ticks[0] -eq $ticks[1]
+}
 function Strata-Owned($Saved,$Process,[string]$Root,[string]$Config) {
     if (-not $Saved -or -not $Process -or -not $Process.CommandLine -or -not $Process.ExecutablePath) { return $false }
     return $Saved.root -eq $Root -and $Saved.config -eq $Config -and $Saved.backend -eq 'strata' -and [int]$Process.ProcessId -eq [int]$Saved.pid -and $Process.ExecutablePath -eq $Saved.executable -and $Process.CreationDate.ToUniversalTime().ToString('o') -eq $Saved.created -and $Process.CommandLine.Contains((Strata-Quote $Config)) -and $Process.CommandLine.Contains((Strata-Quote $Saved.entry))

@@ -10,7 +10,7 @@
 
 설치 도우미는 두 가지 구성만 제공합니다.
 
-- **기존 Strata FN 연결**: 실제 HTTP loopback URL을 명시하고 모델·유효 문맥을 확인합니다. 기존 서버의 시작·종료·설정은 제어하지 않습니다.
+- **기존 Strata FN 연결**: 실제 HTTP loopback URL을 명시하고 모델·유효 문맥을 확인합니다. 기본적으로 기존 서버의 시작·종료·설정은 제어하지 않습니다. 명시적 외부 제어 스크립트를 설정한 경우에만 기존 자동 관리자에게 재개/일시정지를 요청할 수 있습니다.
 - **Strata FN · 네이티브 준비**: 이미 준비한 고정 Strata 소스·전용 Python/CUDA 의존성·공식 엔진·SC117 GGUF/pack/tokenizer/MTP 설정을 검증하고 관리 설정을 만듭니다. IQ3_XXS / IQ2_XS를 선택하고 문맥·workers·RAM·prefill을 조정할 수 있습니다.
 
 네이티브 준비는 **엔진·모델 전체 자동 다운로드나 새 GPU PC 원클릭 설치가 아닙니다.** Node.js 22가 없으면 공식 portable 배포본만 체크섬 확인 후 준비하며, Hermes는 별도 선택입니다. 앱 연결 설정 변경은 기본 해제이고 선택한 경우에만 기존 설정을 백업합니다. 준비만으로 모델·대기열·Telegram을 시작하지 않습니다.
@@ -55,7 +55,33 @@ EXE는 **코드 서명이 없습니다.** 조직 App Control·Smart App Control�
 
 `settings.example.json`은 **연결 예시**입니다. 기존 설정을 통째로 덮어쓰지 말고 실제 `/health`·`/v1/models`에 맞춘 `modelId`·`contextTokens`·`serverUrl`을 적용하세요. 설정 위치는 `%LOCALAPPDATA%\QwenStatus\settings.json`이며 재시작 후 적용됩니다. 상대 기록 경로는 앱 폴더 기준입니다. UI는 로컬 HTTP만 허용하고 생성된 `ui-token.txt`를 읽습니다. 토큰 문자열을 설정에 넣지 않습니다.
 
-직접 대화에는 같은 대기열의 UI API·토큰 파일이 필요합니다. Node 위치를 자동 발견하지 못하면 `QWEN_NODE_EXE` 또는 설치 도우미의 기록된 Node 경로를 사용합니다. Hermes는 전용 관리 설치 또는 기존의 명시적 바로가기를 사용합니다. 외부 Strata 제어는 원래 도구에서 수행하고, 앱의 모델 켜기/끄기는 네이티브 관리 설치의 소유 프로세스만 대상으로 합니다.
+직접 대화에는 같은 대기열의 UI API·토큰 파일이 필요합니다. Node 위치를 자동 발견하지 못하면 `QWEN_NODE_EXE` 또는 설치 도우미의 기록된 Node 경로를 사용합니다. Hermes는 명시적 기존 런처, 전용 관리 설치, 기본 바로가기 순서로 사용합니다. 앱이 직접 모델을 켜고 끄는 대상은 네이티브 관리 설치의 소유 프로세스뿐입니다.
+
+### 이미 설치한 PC의 선택 설정
+
+아래 두 키는 기본적으로 비어 있으며, 필요한 키만 기존 `settings.json`에 추가하세요. 예시는 실제 설치 경로가 아닙니다.
+
+```json
+{
+  "hermesLaunchScript": "C:/AI/Hermes/Start-Local-Hermes.ps1",
+  "externalControllerScript": "C:/AI/Controller/Set-AI-Mode.ps1"
+}
+```
+
+- `hermesLaunchScript`: **기존의 신뢰하는 Hermes 실행 스크립트**를 지정합니다. Hermes 버튼을 누르면 관리 설치/기본 바로가기보다 먼저 `-NoLogo -NoProfile -NoExit -File`로 대화형 터미널을 열고 스크립트 부모 폴더에서 실행합니다. 기존 홈·인증·provider·폴백 설정을 복사하거나 변경하지 않습니다. 명시한 경로가 잘못되면 오류를 알리고 다른 런처로 폴백하지 않습니다.
+- `externalControllerScript`: **`serverOwnership: "external"`인 Strata 연결에만** 적용합니다. 기존 단일 자동 관리자의 스크립트가 `-Mode auto`와 `-Mode paused`를 지원해야 합니다. 상태창/트레이의 `자동 관리 재개`·`자동 관리 일시정지`는 해당 모드만 숨김 실행으로 요청합니다. 앱이 엔진을 직접 시작/종료하거나 두 번째 관리자를 만들지 않습니다. 관리 설치에는 적용하지 않습니다.
+- 두 값 모두 **실제로 존재하는 `.ps1` 파일의 절대 경로만** 허용합니다. 따옴표·줄바꿈·추가 인수는 허용하지 않습니다. 비어 있거나 생략한 경우 기존 동작을 유지하며, 외부 제어 경로가 없거나 유효하지 않으면 외부 연결의 제어 버튼은 비활성입니다. 기존 `setupPowerShell`/자동 탐색을 그대로 사용하고 실행 정책 우회 옵션을 추가하지 않습니다.
+- 외부 요청의 stdout/stderr는 `<managedInstallRoot>/setup-logs/controller.log`(미설정 시 앱 폴더)에 남깁니다. UI는 비동기로 응답을 기다리며, 65초가 지나면 지연을 알리되 프로세스를 강제 종료하지 않고 계속 기다립니다. 응답 대기 중에는 중복 제어를 막습니다. `auto` 성공은 즉시 모델 준비 완료를 뜻하지 않습니다. 기존 관리자가 GPU를 양보할 수 있으며, 요청 가능 여부는 계속 실제 `/health`의 `loaded`·모델·문맥 검증으로 결정합니다.
+
+이 설정은 기존 도구 연결용이며 Hermes 설치, 자동 관리자 설치/수정 또는 인증 변경 기능이 아닙니다. 지정한 스크립트의 동작과 권한을 먼저 확인하세요.
+
+### 앱 시작 시 대기열만 복원 (선택)
+
+`settings.json`의 `"startQueueWithApp": true`를 **JSON boolean**으로 명시하면, Strata 백엔드이고 `managedInstallRoot`에 준비된 설치 기록과 `setup/setup.ps1`이 있을 때 최초 주 인스턴스가 `StartGateway`를 한 번 비동기로 요청합니다. 기본값은 `false`이며 생략·문자열 `"true"`·숫자는 자동 시작을 허용하지 않습니다. 준비된 외부 Strata 연결에도 사용할 수 있습니다.
+
+기존 게이트웨이의 소유 프로세스/포트 검증과 멱등 동작을 그대로 사용합니다. 모델 서버·외부 자동 관리자·Hermes는 시작하지 않으며 upstream·소유권도 변경하지 않습니다. 두 번째 실행(`--show` 포함)은 기존 창에 신호만 보내고, polling·오프라인 시험에서는 실행하지 않습니다. 실패/30초 응답 지연은 경고창과 `<managedInstallRoot>/setup-logs/controller.log`에 알리고 자동 재시도나 강제 종료는 하지 않습니다.
+
+로그인 시 복원이 필요하면 이 옵션을 켜고 기존 GUI 실행 경로의 바로가기를 사용자 시작프로그램에 등록할 수 있습니다. 앱은 바로가기·예약 작업·별도 시작 래퍼를 자동 생성하지 않습니다.
 
 앱 설정·대화 원문(`chat-history.json`)·진단은 `%LOCALAPPDATA%\QwenStatus`에, 공통 요청 원문·사용량은 연결한 대기열의 `requests`에 저장됩니다. 화면에서 가려도 원본은 남습니다. 기록 감시 오류나 뒤늦은 폴더 생성은 최대 약 15초 간격으로 복구합니다. 공개 저장소·이슈·배포물에 요청·대화·jobs·토큰·인증·실행 로그를 포함하지 마세요.
 

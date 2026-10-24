@@ -27,6 +27,25 @@ Reject {Strata-Profile $pins 'IQ3_XXS' 262144 10 26 'auto;unsafe'} 'Invalid pref
 $config='{"args":["--pack","C:\\Models\\pack","--native","C:\\Models\\first.gguf","--ple-gguf","C:\\Models\\second.gguf","--mtp","C:\\Models\\mtp","--vision"]}'|ConvertFrom-Json
 Assert ((Strata-Arguments $config)['--native'] -eq 'C:\Models\first.gguf') 'Path with native shard was lost'
 $config.args+=@('--approx-route-skip','on');Reject {Strata-Arguments $config} 'Approximate route skipping accepted'
+# Gateway receipts remain exact instants whether ConvertFrom-Json returns a string (5.1) or DateTime (7).
+$stamp='2030-01-02T03:04:05.1234567Z'
+$utc=[DateTime]::ParseExact($stamp,'o',[Globalization.CultureInfo]::InvariantCulture,[Globalization.DateTimeStyles]::RoundtripKind)
+$fromJson=('{"created":"'+$stamp+'"}'|ConvertFrom-Json).created
+$offsetStamp='2030-01-02T12:04:05.1234567+09:00'
+$offset=[DateTimeOffset]::ParseExact($offsetStamp,'o',[Globalization.CultureInfo]::InvariantCulture,[Globalization.DateTimeStyles]::None)
+foreach ($same in @($stamp,$fromJson,$utc,$utc.ToLocalTime(),$offset,$offsetStamp)) {
+    Assert (Strata-SameInstant $utc $same) 'Exact gateway creation instant rejected after JSON/type/zone roundtrip'
+    Assert (Strata-SameInstant $same $utc) 'Timestamp comparison depends on argument order'
+}
+Assert (Strata-SameInstant $stamp $stamp) 'Roundtrip timestamp strings rejected'
+foreach ($different in @($utc.AddTicks(1),$offset.AddTicks(-1),'2030-01-02T03:04:05.1234568Z','2030-01-02T03:04:06.1234567Z','2030-01-02T03:04:05.1230000Z')) {
+    Assert (-not (Strata-SameInstant $utc $different)) 'Gateway ownership ignored a creation-time/tick mismatch'
+}
+foreach ($invalid in @($null,'','not a timestamp','01/02/2030 03:04:05','2030-01-02T03:04:05.1234567','2030-01-02T03:04:05.123456Z','2030-01-02T03:04:05.12345678Z','2030-13-02T03:04:05.1234567Z',123,$true,[DateTime]::SpecifyKind($utc,[DateTimeKind]::Unspecified))) {
+    Assert (-not (Strata-SameInstant $utc $invalid)) 'Malformed/missing/ambiguous creation time accepted'
+    Assert (-not (Strata-SameInstant $invalid $utc)) 'Malformed observed creation time accepted'
+    Assert (-not (Strata-SameInstant $invalid $invalid)) 'Equal invalid creation times accepted'
+}
 $root='C:\Apps\한글 Qwen';$path=$root+'\strata\server.json';$entry='C:\Sources\Strata\serve\server.py';$created=[DateTime]::UtcNow
 $saved=[pscustomobject]@{root=$root;config=$path;backend='strata';pid=123;executable='C:\Python\Scripts\python.exe';entry=$entry;created=$created.ToUniversalTime().ToString('o')}
 $launch=Strata-LaunchArguments $entry $path 2
@@ -47,5 +66,5 @@ $plan=& $shell -NoProfile -File (Join-Path $PSScriptRoot 'strata-install.ps1') -
 Assert ($LASTEXITCODE -eq 0 -and -not (Test-Path -LiteralPath $temp)) 'Strata Plan mutated target or failed'
 $plan=$plan|ConvertFrom-Json
 Assert (-not $plan.startsModelServer -and -not $plan.downloads -and -not $plan.dockerRequired -and -not $plan.automaticEngineAcquisition -and $plan.profile.quant -eq 'IQ2_XS') 'Plan falsely promised acquisition or started a model'
-Write-Output 'PASS: offline Strata origin/identity/context/profile/config/ownership parsing and read-only native plan; no downloads/GPU starts/live ports/settings'
+Write-Output 'PASS: offline Strata origin/identity/context/profile/config/ownership parsing; exact UTC gateway timestamp string/JSON/DateTime/DateTimeOffset roundtrips and fail-closed precision/malformed guards; read-only native plan; no downloads/GPU starts/live ports/settings'
 $global:LASTEXITCODE=0

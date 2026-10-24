@@ -148,7 +148,7 @@ function Owned-GatewayProcess {
     $path=Join-Path $InstallRoot 'gateway-process.json';if (-not (Test-Path -LiteralPath $path)) { return $null }
     $saved=Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
     $process=Get-CimInstance Win32_Process -Filter ('ProcessId='+[int]$saved.pid) -ErrorAction SilentlyContinue
-    if ($process -and $process.CommandLine -and $process.CommandLine.Contains((Join-Path $gatewayRoot 'gateway.mjs')) -and $process.ExecutablePath -eq $saved.executable -and $process.CreationDate.ToUniversalTime().ToString('o') -eq $saved.created) { return $process }
+    if ($process -and $process.CommandLine -and $process.CommandLine.Contains((Join-Path $gatewayRoot 'gateway.mjs')) -and $process.ExecutablePath -eq $saved.executable -and (Strata-SameInstant $process.CreationDate $saved.created)) { return $process }
     return $null
 }
 function Start-Gateway {
