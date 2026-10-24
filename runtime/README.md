@@ -4,6 +4,26 @@ Node.js 22 or newer is required. These ES modules use only Node built-ins; there
 
 The gateway, MCP worker and benchmark **never install, start, restart or stop a model server**. An operator must start the selected model backend separately. A stopped backend produces an unavailable response. Starting the queue alone does not load a model.
 
+## Strata FN first
+
+The primary Windows path is Strata FN (SC117 Qwen3.8 Flash Next IQ3_XXS / IQ2_XS). Attach an existing loopback server without controlling its lifecycle, or use `setup/strata-install.ps1` to validate **already installed** pinned source 0.2.3.1, dedicated Python/CUDA dependencies, official engine 0.1.48 and prepared SC117 GGUF/pack/tokenizer/MTP configuration. This is not automatic engine/model acquisition or a verified fresh-GPU installation. See [INSTALL](../INSTALL.md). Legacy vLLM/ninfer paths remain available.
+
+For Strata, set `QWEN_BACKEND=strata`, an explicit `QWEN_UPSTREAM_URL` and the exact `QWEN_MODEL_ID` discovered by setup. Setup persists the effective context (minimum of `/health.max_context` and matching `/v1/models` `meta.n_ctx`) in its receipt and launches the gateway with `QWEN_CONTEXT_TOKENS`. The runtime requires `service=strata`, a matching model, boolean `loaded` and a valid reported or explicitly verified context. Reachable but unloaded is not ready. A foreign service or wrong model is unavailable, never silently treated as vLLM.
+
+**The Strata gateway path is text/tools only**, even if the upstream advertises images. Capabilities remain `vision_ready:false`; image requests receive a clear 400 before counting or generation. Pinned source has no `/tokenize`: a 404 triggers conversion of text/tool messages to `/v1/messages/count_tokens`. Tool-use IDs and JSON arguments are preserved. No image-counting or lossless multimodal compatibility is claimed; legacy media behavior is unchanged.
+
+Strata JSON `/metrics` is exposed as normalized `GET /status` (native rates/context/totals) and a narrow Prometheus compatibility `GET /metrics`. Missing rates, KV and GPU gauges remain absent/null, not invented zero values. Upstream failure/malformed metrics returns a bounded non-200 error before headers are committed. Strata chat reserves at least 4,096 output tokens within actual context; benchmark profiles are filtered to those that fit (including 224k only at sufficient capacity). None run automatically.
+
+Example for an already running server (replace model/address with verified values; this only starts the queue):
+
+```powershell
+$env:QWEN_BACKEND='strata'
+$env:QWEN_UPSTREAM_URL='http://127.0.0.1:8088'
+$env:QWEN_MODEL_ID='qwen3.8-flash-next-sc117-uncensored-iq3_xxs'
+$env:QWEN_CONTEXT_TOKENS='262144' # only if verified for this server
+node runtime/gateway/gateway.mjs
+```
+
 ## Configuration
 
 Set these environment variables in the launcher environment. All directory/executable paths must be absolute.
@@ -14,10 +34,11 @@ Set these environment variables in the launcher environment. All directory/execu
 | `QWEN_QUEUE_PORT` | `18022`; gateway binds to `127.0.0.1` |
 | `QWEN_QUEUE_URL` | `http://127.0.0.1:<QWEN_QUEUE_PORT>`; worker and benchmark connect here |
 | `QWEN_UPSTREAM_URL` | `http://127.0.0.1:18021`; existing backend origin |
-| `QWEN_MODEL_ID` | `qwen3.8-27b`; must match the backend served model name |
-| `QWEN_BACKEND` | `vllm` or `ninfer`, default `vllm`; controls context/time limits, not process lifecycle |
-| `QWEN_BACKEND_FILE` | Optional absolute path to a file containing only `vllm` or `ninfer` (up to 64 bytes). Gateway rereads it for each new request; missing file falls back to `QWEN_BACKEND`, invalid/unreadable files return an error. Backend changes need no queue restart. |
-| `QWEN_VISION_READY` | `1` explicitly enables images for a verified vision backend; default off; ninfer remains text only |
+| `QWEN_MODEL_ID` | Required for Strata, exact served model; legacy default `qwen3.8-27b` |
+| `QWEN_BACKEND` | `strata`, `vllm` or `ninfer`; compatibility default `vllm`; not process lifecycle |
+| `QWEN_CONTEXT_TOKENS` | Optional explicitly verified Strata capacity; clamps reported capacity; setup supplies its stored effective context |
+| `QWEN_BACKEND_FILE` | Optional absolute file containing only `strata`, `vllm` or `ninfer` (up to 64 bytes). Reread per admission; missing falls back to `QWEN_BACKEND`, invalid/unreadable is an error. Strata connection changes require stopping the queue and explicitly configuring matching model/upstream/context before restart. |
+| `QWEN_VISION_READY` | `1` explicitly enables images for verified vLLM vision; default off; Strata/ninfer remain text only |
 | `QWEN_GATEWAY_DATA_DIR` | `<app root>/runtime/gateway`; UI token, request records, conversations and benchmark reports |
 | `QWEN_WORKER_DATA_DIR` | `<app root>/runtime/worker`; worker writes the `jobs` subdirectory |
 | `QWEN_WORK_DIR` | `<app root>/work`; default agent working directory, must already exist |
@@ -51,7 +72,7 @@ node runtime/gateway/token-test.mjs quick
 node runtime/gateway/token-test.mjs 8k
 ```
 
-Benchmark profiles are `quick`, `8k`, `32k`, `64k`, and `224k` (last one requires the selected backend to be `ninfer`). Large profiles must fit the configured backend's context capacity. The 224K profile targets at most 228,864 input tokens, reserving 256 output tokens and another 256 tokens for template variation within the 229,376-token total limit. Prompt token counting uses the queue's normalized `/tokenize` endpoint; all model generation uses the shared queue. `cancel` followed by a newline on stdin cancels a benchmark. With `--ui`, closing stdin also cancels. Exit code is 0 for success, 1 for failure or cancellation; the final `보고서:` line contains the JSON report path. No model server is launched. Interrupted hard kills may leave `token-tests/running.lock`; remove it only after confirming that benchmark process has stopped.
+Benchmark profiles are `quick`, `8k`, `32k`, `64k`, and `224k` (224k requires ninfer or a sufficiently large verified Strata context). Large profiles must fit the configured backend's context capacity. The 224K profile targets at most 228,864 input tokens, reserving 256 output tokens and another 256 tokens for template variation within the 229,376-token total limit. Prompt token counting uses the queue's normalized `/tokenize` endpoint; all model generation uses the shared queue. `cancel` followed by a newline on stdin cancels a benchmark. With `--ui`, closing stdin also cancels. Exit code is 0 for success, 1 for failure or cancellation; the final `보고서:` line contains the JSON report path. No model server is launched. Interrupted hard kills may leave `token-tests/running.lock`; remove it only after confirming that benchmark process has stopped.
 
 Switch the backend only while the queue/benchmark is idle. A queued request keeps the backend mode selected at admission for its timeout/record; changing the backend selection file never starts or stops a server. A running benchmark keeps its startup mode for profile/time limits.
 
@@ -61,9 +82,9 @@ The queue permits one generation at a time, keeps FIFO order and admits up to 24
 
 - `GET /health`: 200 with `{ready:true}` or 503 with `{ready:false}`.
 - `GET /queue`: `{running,waiting,ui_running}` counts.
-- `GET /capabilities`: `{vision_ready,image_limit:1,video_ready:false}`; vision capability is explicitly configured.
-- `GET /v1/models`, `GET /metrics`: pass through to the backend.
-- `POST /tokenize`: accepts `{messages}` and returns `{count}` for either backend. NInfer counting accepts text system/user/assistant messages; token counting does not perform generation.
+- `GET /capabilities`: backend/model/loaded, actual `context_tokens`, `chat_input_budget`, fitting `benchmark_profiles`, `vision_ready`, `image_limit:1`, `video_ready:false`; Strata remains text only.
+- `GET /v1/models`: pass through. `GET /metrics`: pass through for legacy backends, normalized compatibility metrics for Strata. `GET /status`: normalized Strata JSON metrics.
+- `POST /tokenize`: accepts `{messages}` and returns `{count}` for the selected backend. NInfer counting accepts text system/user/assistant messages; token counting does not perform generation.
 - `POST /v1/chat/completions`: OpenAI-compatible chat/SSE; `x-qwen-request-id` response header identifies the saved request. Requests with a browser `Origin` header are rejected.
 - All `/ui/*` routes require `x-ui-token`, read from `<gateway data dir>/ui-token.txt`, generated on first queue startup.
 - `POST /ui/jobs`: `{mode:"chat"|"agent",prompt,session,cwd?}` returns `{id}`. `cwd` applies to agent mode.
@@ -81,9 +102,14 @@ The MCP worker exposes `qwen_submit` (task plus explicit absolute text-file path
 These tests use only temporary fixture data and ephemeral loopback fake backends. No installed model or existing user records are read.
 
 ```powershell
-node --test runtime/gateway/test-runtime.mjs runtime/gateway/test-ninfer.mjs runtime/gateway/test-context-limits.mjs runtime/gateway/test-conversations.mjs runtime/gateway/test-token-metrics.mjs runtime/gateway/test-media.mjs runtime/gateway/test-delete.mjs runtime/gateway/test-agent-sessions.mjs runtime/worker/test-stream.mjs
+node --test runtime/gateway/test-*.mjs runtime/worker/test-*.mjs
+# Approved PowerShell environment; no policy override
+./setup/strata-tests.ps1
+./setup/strata-attach-tests.ps1
+# After build.cmd, all ten app tests use a new isolated results directory
+./setup/app-tests.ps1
 ```
 
-Coverage includes FIFO serialization, two-turn conversation context, persistence/compaction, usage/timing, queued and active cancellation, auth, unavailable Hermes, worker results/offline fallback, benchmark quick/cancellation, media limits/redaction, and fragmented UTF-8 SSE. NInfer fixtures also verify token-count translation, live backend-file switching/validation, streaming tool-call preservation, and a 224K benchmark with output/template reservation. Direct-chat boundary tests verify exact input budgets, one-token overflow rejection, and long character inputs. These fixtures verify API compatibility logic, not inference quality or throughput of a real model.
+Coverage includes FIFO serialization, two-turn conversation context, persistence/compaction, usage/timing, queued and active cancellation, auth, unavailable Hermes, worker results/offline fallback, benchmark quick/cancellation, media limits/redaction, and fragmented UTF-8 SSE. NInfer fixtures also verify token-count translation, live backend-file switching/validation, streaming tool-call preservation, and a 224K benchmark with output/template reservation. Direct-chat boundary tests verify exact input budgets, one-token overflow rejection, and long character inputs. Strata fixtures additionally cover loaded/model/context validation, fallback/tool token conversion, native/missing/reset metrics, failed/malformed metrics without hanging, text-only capabilities and image rejection, overflow before generation and tool SSE usage/timings. The attach setup test uses an ephemeral fake Strata plus already available Node to exercise Install/receipt/Verify and isolated opt-in app configuration without starting a gateway/model. App tests write only to `QWEN_SELF_TEST_DIR` and retain failures/previews there. These fixtures verify API compatibility logic, not inference quality or throughput of a real model.
 
 Release source allowlists must exclude `ui-token.txt`, `requests/`, `jobs/`, `conversations/`, `agent-sessions/`, `token-tests/`, Hermes homes and all generated configuration containing credentials. Never copy an existing runtime directory recursively into a public package.

@@ -137,10 +137,9 @@ partial class QwenStatus {
    diagnostics.Text="서버와 공통 대기열을 확인하는 중…";
    string result=await Task.Run(()=>Diagnose());if(!IsDisposed)diagnostics.Text=result;
   }
-  static string Probe(string url){
-   try{var request=(HttpWebRequest)WebRequest.Create(url);request.Timeout=2000;request.ReadWriteTimeout=2000;
-    using(var response=(HttpWebResponse)request.GetResponse())using(var reader=new StreamReader(response.GetResponseStream())){string body=reader.ReadToEnd();bool notReady=false;
-     try{var data=new JavaScriptSerializer().Deserialize<Dictionary<string,object>>(body);notReady=data.ContainsKey("ready")&&!Convert.ToBoolean(data["ready"]);}catch{}
+  static string Probe(string url,bool isModelHealth){
+   try{var request=(HttpWebRequest)WebRequest.Create(url);request.Timeout=2000;request.ReadWriteTimeout=2000;request.AllowAutoRedirect=false;
+    using(var response=(HttpWebResponse)request.GetResponse())using(var reader=new StreamReader(response.GetResponseStream())){string body=reader.ReadToEnd();bool notReady=!ProbeReady(body,isModelHealth);
      return "HTTP "+(int)response.StatusCode+(notReady?" · 준비 안 됨":"");}}
    catch(WebException ex){return ex.Status==WebExceptionStatus.ConnectFailure?"연결 안 됨":ex.Status==WebExceptionStatus.Timeout?"응답 지연":ex.Message;}
    catch(Exception ex){return ex.Message;}
@@ -154,8 +153,8 @@ partial class QwenStatus {
    }catch{return "요청 통계를 읽지 못했습니다.";}
   }
   static string Diagnose(){
-   var lines=new List<string>();string server=Probe(ServerUrl+"health"),queueHealth;
-   try{queueHealth=Probe(new Uri(new Uri(QueueUrl).GetLeftPart(UriPartial.Authority)+"/health").AbsoluteUri);}catch(Exception ex){queueHealth="설정 오류: "+ex.Message;}
+   var lines=new List<string>();string server=Probe(ServerUrl+"health",true),queueHealth;
+   try{queueHealth=Probe(new Uri(new Uri(QueueUrl).GetLeftPart(UriPartial.Authority)+"/health").AbsoluteUri,false);}catch(Exception ex){queueHealth="설정 오류: "+ex.Message;}
    lines.Add("Qwen 서버: "+server);lines.Add("공통 대기열: "+queueHealth);
    if(queueHealth=="HTTP 200")lines.Add("대기열 요청: "+QueueSnapshot());
    lines.Add("선택한 백엔드: "+Backend());lines.Add("요청 기록: "+(Directory.Exists(SharedRequests)?"연결됨":"폴더 없음"));
@@ -174,7 +173,7 @@ partial class QwenStatus {
   void BuildBenchmarks(){
    var page=Page("백엔드 비교");tabs.TabPages.Add(page);
    var bar=new FlowLayoutPanel{Dock=DockStyle.Top,Height=42};page.Controls.Add(bar);
-   benchmarkBackend.DropDownStyle=ComboBoxStyle.DropDownList;benchmarkBackend.Width=110;benchmarkBackend.Items.AddRange(new object[]{"vLLM","ninfer"});benchmarkBackend.SelectedItem=Backend();bar.Controls.Add(benchmarkBackend);
+   benchmarkBackend.DropDownStyle=ComboBoxStyle.DropDownList;benchmarkBackend.Width=110;benchmarkBackend.Items.AddRange(new object[]{"vLLM","ninfer","strata"});benchmarkBackend.SelectedItem=Backend();bar.Controls.Add(benchmarkBackend);
    var test=ActionButton("토큰 테스트 열기");test.Click+=(s,e)=>{if(owner!=null)owner.OpenTokenTest();};bar.Controls.Add(test);
    var add=ActionButton("최근 테스트 결과 등록");add.Click+=(s,e)=>AddLatestBenchmark();bar.Controls.Add(add);
    var remove=ActionButton("선택 기록 제거");remove.Click+=(s,e)=>RemoveBenchmark();bar.Controls.Add(remove);

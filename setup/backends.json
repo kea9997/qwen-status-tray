@@ -1,5 +1,29 @@
 {
   "schemaVersion": 1,
+  "strata": {
+    "repository": "https://github.com/Niko1221/Strata.git",
+    "commit": "7ddc17a38fe7f31637e895ecfba58c2cd43d65ec",
+    "sourceVersion": "0.2.3.1",
+    "engineVersion": "0.1.48",
+    "platform": "Windows native NVIDIA CUDA 13",
+    "acquisition": "Explicit verified installed source, Python, engine SHA256 and prepared SC117 config required. No latest-feed fallback, automatic engine download or model substitution.",
+    "contextTokens": 262144,
+    "minimumRamGiB": 48,
+    "minimumVramMiB": 23000,
+    "minimumFreeGiB": 4,
+    "model": {
+      "repository": "SC117/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-GGUF",
+      "revision": "eec4e10a2c29b440a2ae85591fa11569ce752963",
+      "filenamePattern": "Qwen3.8-Flash-Next-GSQ-RCO-abliterated-{quant}-{shard}-of-00002.gguf",
+      "sharedSecond": {"bytes": 28800138432, "sha256": "316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113"}
+    },
+    "profiles": {
+      "IQ3_XXS": {"bytes": 47342144896, "sha256": "03b11926b41a3d7f7a008882b1bc7a6330a3c9c43d3cad4598d31dc73042fdc5", "prefill": "auto", "poolWorkers": 10, "residentBudgetGiB": 26},
+      "IQ2_XS": {"bytes": 39665015072, "sha256": "4acc3ebb5050d20117bdc77fc39200e709dfe2b2367f3522c95b9112a30aff81", "prefill": "16384", "poolWorkers": 10, "residentBudgetGiB": 26}
+    },
+    "profileDefaults": {"kv": "int8", "kvResident": 32768, "spec": 4, "specMinP": 0.5, "vramReserveMiB": 1280, "draftVocab": "cjk"},
+    "profileNote": "Measured-example settings, not globally optimal or a performance guarantee. Adjust explicitly for memory and workload; approximate route skipping and overclocking are not enabled."
+  },
   "reviewedAt": "2026-09-24",
   "listenAddress": "127.0.0.1",
   "port": 18021,

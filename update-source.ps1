@@ -50,9 +50,11 @@ if ($current -eq $revision) { Write-Output '이미 최신 버전입니다.'; ret
 $nextFiles=& git -C $Repository show ($revision+':package-files.txt')
 if ($LASTEXITCODE -ne 0) { throw '새 버전의 배포 파일 목록을 읽지 못했습니다.' }
 $files=Read-PackageList $nextFiles
+$priorSelfTest=$env:QWEN_SELF_TEST_DIR
 $temp = Join-Path $env:TEMP ('qwen-update-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $temp | Out-Null
 try {
+    $env:QWEN_SELF_TEST_DIR=Join-Path $temp 'offline-tests'
     $zip = Join-Path $temp 'source.zip'
     & git -C $Repository archive --format=zip --output=$zip $revision -- $files
     if ($LASTEXITCODE -ne 0) { throw '소스 압축을 만들지 못했습니다.' }
@@ -62,24 +64,10 @@ try {
     $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
     if (-not (Test-Path -LiteralPath $csc)) { $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework\v4.0.30319\csc.exe' }
     if (-not (Test-Path -LiteralPath $csc)) { throw '.NET Framework C# 컴파일러를 찾지 못했습니다.' }
-    & $csc /nologo /target:winexe ('/out:' + (Join-Path $temp 'check.exe')) /reference:System.Windows.Forms.dll /reference:System.Drawing.dll /reference:System.Web.Extensions.dll (Join-Path $stage 'QwenStatus.cs') (Join-Path $stage 'TokenTestWindow.cs') (Join-Path $stage 'QwenInsights.cs') (Join-Path $stage 'QwenOperations.cs') (Join-Path $stage 'QwenTelemetry.cs') (Join-Path $stage 'QwenExperience.cs') (Join-Path $stage 'QwenChatWindow.cs') (Join-Path $stage 'QwenDelegation.cs') (Join-Path $stage 'QwenInstallWindow.cs')
+    & $csc /nologo /target:winexe ('/out:' + (Join-Path $stage 'check.exe')) /reference:System.Windows.Forms.dll /reference:System.Drawing.dll /reference:System.Web.Extensions.dll (Join-Path $stage 'QwenStatus.cs') (Join-Path $stage 'TokenTestWindow.cs') (Join-Path $stage 'QwenInsights.cs') (Join-Path $stage 'QwenOperations.cs') (Join-Path $stage 'QwenTelemetry.cs') (Join-Path $stage 'QwenExperience.cs') (Join-Path $stage 'QwenChatWindow.cs') (Join-Path $stage 'QwenDelegation.cs') (Join-Path $stage 'QwenInstallWindow.cs') (Join-Path $stage 'QwenStrata.cs')
     if ($LASTEXITCODE -ne 0) { throw '새 소스 컴파일 검사에 실패했습니다. 기존 앱을 유지합니다.' }
-    foreach ($case in @('core-test','insights-test','operations-test','experience-test','chat-test','delegation-test','install-test')) {
-        $arguments = '-NoProfile -STA -ExecutionPolicy RemoteSigned -File "' + (Join-Path $stage 'run-source.ps1') + '" --' + $case
-        $started = Get-Date
-        $testProcess = Start-Process -FilePath powershell.exe -ArgumentList $arguments -WindowStyle Hidden -PassThru
-        if (-not $testProcess.WaitForExit(30000)) { Stop-Process -Id $testProcess.Id -Force; throw ('새 소스 자체 검사가 시간 초과: ' + $case) }
-        if ($testProcess.ExitCode -ne 0) { throw ('새 소스 자체 검사 실패: ' + $case) }
-        $resultPath = Join-Path $env:LOCALAPPDATA ('QwenStatus\' + $case + '-result.txt')
-        if ($case -eq 'insights-test') { $resultPath = Join-Path $env:LOCALAPPDATA 'QwenStatus\insights-test.txt' }
-        if ($case -eq 'operations-test') { $resultPath = Join-Path $env:LOCALAPPDATA 'QwenStatus\operations-test.txt' }
-        if ($case -eq 'experience-test') { $resultPath = Join-Path $env:LOCALAPPDATA 'QwenStatus\experience-test.txt' }
-        if ($case -eq 'chat-test') { $resultPath = Join-Path $env:LOCALAPPDATA 'QwenStatus\chat-test.txt' }
-        if ($case -eq 'delegation-test') { $resultPath = Join-Path $env:LOCALAPPDATA 'QwenStatus\delegation-test.txt' }
-        if ($case -eq 'install-test') { $resultPath = Join-Path $env:LOCALAPPDATA 'QwenStatus\install-test.txt' }
-        $result = Get-Item -LiteralPath $resultPath -ErrorAction SilentlyContinue
-        if (-not $result -or $result.LastWriteTime -lt $started.AddSeconds(-2) -or -not ((Get-Content -LiteralPath $resultPath -Raw).Trim().StartsWith('PASS'))) { throw ('새 소스 자체 검사 결과 확인 실패: ' + $case) }
-    }
+    # Run the compiled app directly; never change script policy or read real AppData test results.
+    & (Join-Path $stage 'setup\app-tests.ps1') -Executable (Join-Path $stage 'check.exe') -ResultsDirectory $env:QWEN_SELF_TEST_DIR
     New-Item -ItemType Directory -Path $backupRoot -Force | Out-Null
     $backup = Join-Path $backupRoot (Get-Date -Format 'yyyyMMdd-HHmmss-fff')
     New-Item -ItemType Directory -Path $backup | Out-Null
@@ -102,6 +90,7 @@ try {
     Write-Output ('설치 완료: ' + $revision)
     Write-Output ('복구 파일: ' + $backup)
 } finally {
+    $env:QWEN_SELF_TEST_DIR=$priorSelfTest
     $resolvedTemp = (Resolve-Path -LiteralPath $temp -ErrorAction SilentlyContinue).Path
     $tempRoot = [IO.Path]::GetFullPath($env:TEMP).TrimEnd('\') + '\'
     if ($resolvedTemp -and $resolvedTemp.StartsWith($tempRoot, [StringComparison]::OrdinalIgnoreCase) -and (Split-Path -Leaf $resolvedTemp) -match '^qwen-update-[0-9a-f]{32}$') {

@@ -7,6 +7,15 @@ QwenExperience.cs
 QwenChatWindow.cs
 QwenDelegation.cs
 QwenInstallWindow.cs
+QwenStrata.cs
+runtime/gateway/strata.mjs
+runtime/gateway/test-strata.mjs
+setup/app-tests.ps1
+setup/strata-common.ps1
+setup/strata-install.ps1
+setup/strata-tests.ps1
+setup/strata-attach-tests.ps1
+setup/strata-attach-fixture.mjs
 run-source.ps1
 update-source.ps1
 build.cmd

@@ -12,8 +12,12 @@
 - 기존 소스의 절대 경로: `[있으면 입력, 없으면 새 사용자 폴더에 clone]`
 - 새 설치 폴더: `[예: C:\Users\내이름\Apps\QwenLocal]`
 - GPU·VRAM·RAM: `[모르면 읽기 전용으로 확인]`
-- 백엔드: `[existing / vllm / ninfer / both]`
-- 모델: `[standard / uncensored]`
+- 백엔드: `[기본: existing + ExistingBackend strata / strata 네이티브 준비 / 레거시 vllm / ninfer / both]`
+- Strata 기존 연결 URL: `[예: http://127.0.0.1:8088, 실제 loopback 주소 명시]`
+- Strata 모델 ID: `[알면 입력, 모르면 Install에서 health/models로 확인]`
+- Strata 네이티브 선택 시: `[IQ3_XXS / IQ2_XS]`, `[고정 소스·전용 Python·준비된 SC117 JSON 경로·검증한 strata.exe SHA256·명시적 GPU index]`
+- Strata 튜닝: `[기본 예시: context 262144 / workers 10 / resident 26GiB / IQ3 prefill auto, IQ2 16384; 메모리와 작업에 맞게 조정]`
+- 레거시 모델: `[standard / uncensored]`
 - Hermes 설치: `[예 / 아니요]`
 - 현재 상태 앱 연결도 새 경로로 변경: `[예 / 아니요, 기본 아니요]`
 - 설치 후 서버 시작·짧은 실제 응답 검증: `[예 / 아니요, 지정 없으면 설치 후 시작 의사 확인]`
@@ -22,7 +26,7 @@
 
 ## 읽을 파일과 보존 원칙
 
-먼저 `INSTALL.md`, `setup/setup.ps1`, `setup/backends.json`, `setup/backend-README.md`, `runtime/README.md`를 읽으세요. Hermes 선택 시 `setup/HERMES.md`와 `setup/hermes-install.ps1`도 확인하세요. 현재 스크립트에 없는 옵션이나 성공 결과를 추측하지 마세요. 선택한 경로·구성·다운로드와 필요한 수동 단계를 짧게 알려 주세요.
+먼저 `INSTALL.md`, `setup/setup.ps1`, `setup/strata-install.ps1`, `setup/strata-common.ps1`, `setup/backends.json`, `setup/backend-README.md`, `runtime/README.md`를 읽으세요. Strata FN이 우선 경로입니다. 네이티브 준비는 설치된 고정 소스·Python/CUDA 의존성·공식 엔진 0.1.48·준비된 SC117 GGUF/pack/tokenizer/MTP의 검증이며, 자동 엔진/모델 다운로드나 새 GPU PC 전체 자동 설치가 아닙니다. 선행 조건이 없으면 그 단계가 남았다고 보고하고 임의 다운로드 관리기를 만들지 마세요. Hermes 선택 시 `setup/HERMES.md`와 `setup/hermes-install.ps1`도 확인하세요. 현재 스크립트에 없는 옵션이나 성공 결과를 추측하지 마세요. 선택한 경로·구성·다운로드와 필요한 수동 단계를 짧게 알려 주세요.
 
 기존 저장소·설정·모델·프로필·로그·서버를 삭제·덮어쓰기·재설치하지 마세요. 다른 설치의 프로세스를 kill/restart/stop하지 마세요. `18021`/`18022`가 사용 중이면 소유자와 사용할 환경을 확인하세요. 기존 설정 파일 전체를 예제로 바꾸지 마세요.
 
@@ -37,25 +41,26 @@
 1. 소스가 없으면 사용자 폴더의 새 경로에 Git으로 받으세요. 기존 경로는 삭제하거나 새 clone으로 덮어쓰지 마세요.
 2. 상태 앱은 **Windows PowerShell 5.1**에서 `powershell.exe -NoProfile -STA -File <소스경로>\run-source.ps1`로 실행합니다. 트레이의 **설치 도우미 / AI 설치**가 같은 설치기를 사용합니다. 이는 .NET Framework 앱 실행이며 모델 서버 시작이 아닙니다.
 3. 설치 작업은 승인된 **PowerShell 7을 우선 사용**하세요. 상태 앱의 실행 환경과 혼동하지 마세요. 정책 우회 플래그를 붙이지 말고 막힌 경우 필요한 공식 설치·승인 단계를 설명하세요.
-4. `Plan → Install → Verify`를 같은 선택으로 진행하세요. 다음은 공통 구성만 설치하는 예시입니다. 내 선택에 맞게 바꾸되 실제 매개변수와 대조하세요.
+4. `Plan → Install → Verify`를 같은 선택으로 진행하세요. 다음은 기존 Strata를 그대로 두고 공통 구성만 준비하는 예시입니다. URL은 사용자가 선택한 실제 주소를 사용하세요. 내 선택에 맞게 바꾸되 실제 매개변수와 대조하세요.
 
 ```powershell
 $source = 'C:\Users\내이름\Apps\QwenStatus-source'
 $app = 'C:\Users\내이름\Apps\QwenLocal'
 $setup = Join-Path $source 'setup\setup.ps1'
-& $setup -Action Plan -InstallRoot $app -Backend existing -Model standard -Json
-& $setup -Action Install -InstallRoot $app -Backend existing -Model standard
-& $setup -Action Verify -InstallRoot $app -Backend existing -Model standard
+& $setup -Action Plan -InstallRoot $app -Backend existing -ExistingBackend strata -UpstreamUrl http://127.0.0.1:8088 -Json
+& $setup -Action Install -InstallRoot $app -Backend existing -ExistingBackend strata -UpstreamUrl http://127.0.0.1:8088
+& $setup -Action Verify -InstallRoot $app
 ```
 
-`-Backend`는 `existing|vllm|ninfer|both`, `-Model`은 `standard|uncensored`입니다. `existing`으로 ninfer를 연결한다면 `-ExistingBackend ninfer`를 추가하세요(기본 vllm). Hermes 선택 시 Plan·Install에 `-IncludeHermes`, 현재 앱 연결 변경을 선택했을 때만 `-ConfigureApp`을 붙이세요. gated 모델은 본인의 접근 동의·인증 후 `-HfTokenFile`에 개인 토큰 파일의 절대 경로를 전달하며 토큰 문자열은 넣지 마세요. UI에서도 파일 경로만 선택합니다. 대상 설치 경로도 절대 경로입니다. 제공된 설치기를 임의의 외부 자동 설치 도구로 대체하지 마세요.
+`-Backend`는 `existing|strata|vllm|ninfer|both`, 레거시 `-Model`은 `standard|uncensored`입니다. Strata attach는 `-ExistingBackend strata -UpstreamUrl <loopback origin>`과 선택형 `-ModelId`를 사용합니다. 실제 모델·유효 문맥을 receipt에 저장하며 기존 서버를 제어하지 않습니다. Strata 네이티브는 `-Backend strata -StrataProfile IQ3_XXS|IQ2_XS`와 `-StrataSource`, `-StrataPython`, `-StrataConfig`, `-EngineSha256`, `-GpuIndex`가 필요합니다. 세부 예시·RAM/VRAM/공간 조건은 INSTALL의 우선 경로를 따르세요. SC117 공개 가중치에는 gated 인증이 필요 없으며 레거시 gated 흐름과 혼동하지 마세요. `existing`으로 ninfer를 연결한다면 `-ExistingBackend ninfer`를 추가하세요(기본 vllm). Hermes 선택 시 Plan·Install에 `-IncludeHermes`, 현재 앱 연결 변경을 선택했을 때만 `-ConfigureApp`을 붙이세요. gated 모델은 본인의 접근 동의·인증 후 `-HfTokenFile`에 개인 토큰 파일의 절대 경로를 전달하며 토큰 문자열은 넣지 마세요. UI에서도 파일 경로만 선택합니다. 대상 설치 경로도 절대 경로입니다. 제공된 설치기를 임의의 외부 자동 설치 도구로 대체하지 마세요.
 
 기존 앱 설정이 없는 새 환경은 설치 폴더의 runtime·portable Node 기본 경로를 사용합니다. 기존 설정이 있으면 연결 변경을 선택한 경우에만 백업 후 수정하고, 설치된 앱을 다시 열어 적용을 확인하세요.
 
 구성별 확인 사항:
 
 - 공통 대기열·MCP worker 소스는 `runtime`에 있습니다. Node.js 22 이상이 없으면 공식 portable 배포본을 체크섬 확인 후 설치 폴더에 준비합니다. 비공개 개인 worker나 별도 npm 의존성을 임의로 가져오지 마세요.
-- 백엔드는 `backends.json`의 고정 소스 커밋·모델 리비전·이미지 digest를 사용합니다. vLLM 표준은 24GB급 RTX 3090/4090/5090 프로필입니다. ninfer 표준은 4090 Ada와 5090 Blackwell의 엔진·모델 준비 경로가 다르므로 산출물을 섞지 마세요.
+- Strata는 `backends.json`의 소스 0.2.3.1 고정 커밋·엔진 0.1.48·SC117 고정 리비전/두 GGUF SHA256을 검사합니다. 설치와 명시적 재검증은 대용량 파일을 해시하므로 오래 걸릴 수 있습니다. 예시 프로필은 보편 최적값이나 속도 보장이 아니며 근사 route skipping·오버클럭은 켜지 않습니다. 게이트웨이는 텍스트·도구 호출 전용으로 images 광고와 무관하게 이미지를 거절합니다.
+- 레거시 백엔드는 `backends.json`의 고정 소스 커밋·모델 리비전·이미지 digest를 사용합니다. vLLM 표준은 24GB급 RTX 3090/4090/5090 프로필입니다. ninfer 표준은 4090 Ada와 5090 Blackwell의 엔진·모델 준비 경로가 다르므로 산출물을 섞지 마세요.
 - vLLM+무검열, RTX 3090+ninfer는 현재 지원하지 않습니다. ninfer+무검열은 지원되는 RTX 5090 Blackwell 경로와 본인 Hugging Face 접근 동의·인증이 필요합니다. 지원되지 않으면 이유를 보고하고 중단하세요. 표준 모델로 몰래 대체하거나 검사를 제거하지 마세요.
 - GPU 선택·Blackwell 변환·gated 인증의 세부 옵션은 현재 `setup/backend-install.ps1`과 백엔드 문서를 확인하세요. Windows 모델 준비 공간과 Docker Linux 디스크 공간을 따로 확인하세요. 다운로드·CPU 변환·Docker 빌드는 실제 GPU 추론 검증과 다릅니다.
 - Hermes는 `InstallRoot\hermes` 전용 Python·소스·`profiles\qwen` 홈·Git Bash를 사용합니다. 기존 AppData Hermes 프로필·계정·토큰을 읽거나 복사하지 마세요. `hermes\install-result.json`의 `environment.QWEN_HERMES_PYTHON/ROOT/HOME/GIT_BASH`를 사용하고 inherited `HERMES_PROFILE/CONFIG/ENV`가 전용 홈을 덮어쓰지 않게 하세요. Telegram과 첫 실행 동의는 내가 직접 처리합니다.
@@ -68,7 +73,7 @@ $setup = Join-Path $source 'setup\setup.ps1'
 선택한 구성에 해당하는 검증을 실행하고 **실제 결과**를 남겨 주세요.
 
 1. 통합 `Verify`의 Node·gateway/worker 소스·모델 health·queue health·기록 폴더·UI 토큰 존재 여부. 종료 코드 0만 보지 말고 항목별 값을 확인하고 토큰 내용은 출력하지 마세요.
-2. 모델 `/health`, `/v1/models`의 `qwen3.8-27b`, 대기열 `/health`·`/queue` 응답.
+2. 선택한 모델 `/health`·`/v1/models`와 저장한 모델·실제 유효 문맥 일치. Strata는 `service=strata`, `loaded=true`를 확인하며 unloaded·다른 서비스·다른 모델을 준비 완료로 표시하지 마세요. 레거시 모델 ID는 `qwen3.8-27b`입니다. 대기열 `/health`·`/queue`도 별도로 확인하세요.
 3. 공통 대기열을 통한 짧은 질문·후속 질문 완료와 사용량·요청 기록. 가능하면 앱 직접 대화도 확인하되 원문이나 전체 로그를 공개할 필요는 없습니다.
 4. MCP 위임 선택 시 대상 AI에 `runtime/worker/server.mjs`를 등록하고 작은 작업 제출·결과 회수. 등록만으로 도구 호출 성공을 주장하지 마세요.
 5. Hermes 선택 시 전용 설치 Verify와 내 첫 실행 후 로컬 모델 연결. 계정 입력 등 사용자 단계는 완료될 때까지 미완료로 표시하세요.

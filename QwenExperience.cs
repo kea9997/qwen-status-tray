@@ -49,17 +49,17 @@ partial class QwenStatus {
    result.Bounds=new Rectangle(26,345,660,145);result.Anchor=AnchorStyles.Top|AnchorStyles.Bottom|AnchorStyles.Left|AnchorStyles.Right;result.ForeColor=Color.FromArgb(45,55,75);
    result.Text="처음이라면 설치 도우미에서 공통 대기열·모델 서버를 준비하세요.\n서버만 연결해도 상태·GPU 지표는 볼 수 있습니다.\n연결 확인은 서버를 자동으로 시작하지 않습니다.";Controls.Add(result);
   }
-  static string ProbeLocal(string url,string tokenFile=null){
+  static string ProbeLocal(string url,bool isModelHealth,string tokenFile=null){
    try{var request=(HttpWebRequest)WebRequest.Create(url);request.Timeout=2000;request.ReadWriteTimeout=2000;if(tokenFile!=null)request.Headers["x-ui-token"]=File.ReadAllText(tokenFile).Trim();
-    using(var response=(HttpWebResponse)request.GetResponse())return "연결됨 (HTTP "+(int)response.StatusCode+")";
+    request.AllowAutoRedirect=false;using(var response=(HttpWebResponse)request.GetResponse())using(var reader=new StreamReader(response.GetResponseStream()))return response.StatusCode!=HttpStatusCode.OK?"연결 확인 필요: HTTP "+(int)response.StatusCode:!ProbeReady(reader.ReadToEnd(),isModelHealth)?"연결됨 · "+(isModelHealth?"모델 준비/식별 확인 필요":"대기열 준비/응답 확인 필요"):"연결됨 (HTTP 200)";
    }catch(WebException ex){return ex.Status==WebExceptionStatus.ConnectFailure?"연결되지 않음":ex.Status==WebExceptionStatus.Timeout?"응답 지연":"연결 확인 필요: "+ex.Status;}catch(Exception ex){return "확인 실패: "+ex.Message;}
   }
   async void CheckConnection(){
    if(!IsLoopbackHttp(serverBox.Text.Trim().TrimEnd('/')+"/health","/health")){result.Text="모델 서버는 로컬 HTTP 기본 주소여야 합니다.";return;}
    if(!IsLoopbackHttp(queueBox.Text,"/queue")){result.Text="공통 대기열은 로컬 HTTP /queue 주소여야 합니다.";return;}
    result.Text="연결 확인 중…";string server=serverBox.Text.Trim().TrimEnd('/')+"/health",queue=queueBox.Text.Trim(),folder=folderBox.Text.Trim();
-   string status=await Task.Run(()=>{string model=ProbeLocal(server),gateway=ProbeLocal(queue),details="사용 불가";
-    string tokenFile=Path.Combine(folder,"ui-token.txt");if(File.Exists(tokenFile))details=ProbeLocal(new Uri(new Uri(queue).GetLeftPart(UriPartial.Authority)+"/ui/queue").AbsoluteUri,tokenFile);
+   string status=await Task.Run(()=>{string model=ProbeLocal(server,true),gateway=ProbeLocal(queue,false),details="사용 불가";
+    string tokenFile=Path.Combine(folder,"ui-token.txt");if(File.Exists(tokenFile))details=ProbeLocal(new Uri(new Uri(queue).GetLeftPart(UriPartial.Authority)+"/ui/queue").AbsoluteUri,false,tokenFile);
     return "모델: "+model+"\n공통 대기열: "+gateway+"\n요청별 대기열: "+details+"\n기록 폴더: "+(Directory.Exists(Path.Combine(folder,"requests"))?"연결됨":"없음")+"\n\n대기열이 없다면 상태·GPU 지표만 사용할 수 있습니다.";});
    if(!IsDisposed)result.Text=status;
   }

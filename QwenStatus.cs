@@ -23,7 +23,7 @@ partial class QwenStatus : Form {
   string directory=AppDomain.CurrentDomain.GetData("QwenStatusRoot") as string;
   return Path.GetFullPath(string.IsNullOrWhiteSpace(directory)?AppDomain.CurrentDomain.BaseDirectory:directory).TrimEnd(Path.DirectorySeparatorChar);
  }
- static readonly string DataRoot=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"QwenStatus");
+ static readonly string DataRoot=StatusDataRoot();
  static readonly Dictionary<string,object> Settings=LoadSettings();
  static string RuntimePath(string part,string legacy){string bundled=Path.Combine(Root,"runtime",part),previous=Path.GetFullPath(Path.Combine(Root,"..",legacy));return Directory.Exists(bundled)&&(!Directory.Exists(previous)||File.Exists(Path.Combine(Root,"setup-state.json")))?bundled:previous;}
  internal static readonly string GatewayRoot=SettingPath("gatewayDirectory",RuntimePath("gateway","qwen-gateway"));
@@ -36,7 +36,7 @@ partial class QwenStatus : Form {
  Label state=new Label(), note=new Label(), usage=new Label(), rate=new Label(); Button usageButton=new Button(); CheckBox hideContentBox=new CheckBox();
  Button start=new Button(), stop=new Button();
  static readonly string Jobs=SettingPath("jobsDirectory",Path.Combine(RuntimePath("worker","codex-local-worker"),"jobs"));
- static Dictionary<string,object> LoadSettings(){try{string path=Path.Combine(DataRoot,"settings.json");return File.Exists(path)?new JavaScriptSerializer().Deserialize<Dictionary<string,object>>(File.ReadAllText(path)):new Dictionary<string,object>();}catch{return new Dictionary<string,object>();}}
+ static Dictionary<string,object> LoadSettings(){if(OfflineTest)return new Dictionary<string,object>{{"serverUrl","http://127.0.0.1:1/"},{"queueUrl","http://127.0.0.1:1/queue"},{"gatewayDirectory",Path.Combine(DataRoot,"gateway")},{"jobsDirectory",Path.Combine(DataRoot,"jobs")},{"backendFile",Path.Combine(DataRoot,"backend.txt")},{"managedInstallRoot",Path.Combine(DataRoot,"managed")}};try{string path=Path.Combine(DataRoot,"settings.json");return File.Exists(path)?new JavaScriptSerializer().Deserialize<Dictionary<string,object>>(File.ReadAllText(path)):new Dictionary<string,object>();}catch{return new Dictionary<string,object>();}}
  static string Setting(string key,string fallback){object value;return Settings.TryGetValue(key,out value)&&value!=null&&!string.IsNullOrWhiteSpace(value.ToString())?value.ToString():fallback;}
  static string SettingPath(string key,string fallback){string value=Environment.ExpandEnvironmentVariables(Setting(key,fallback));return Path.GetFullPath(Path.IsPathRooted(value)?value:Path.Combine(Root,value));}
  ComboBox history=new ComboBox(); CheckBox follow=new CheckBox();
@@ -244,6 +244,7 @@ partial class QwenStatus : Form {
   Resize+=(s,e)=>{if(WindowState==FormWindowState.Minimized)Hide();};
   FormClosed+=(s,e)=>{timer.Stop();StopPowerMonitor();CloseDelegation();if(installerWindow!=null&&!installerWindow.IsDisposed)installerWindow.Dispose();if(jobWatchers!=null)foreach(var watcher in jobWatchers)if(watcher!=null)watcher.Dispose();if(usageWindow!=null&&!usageWindow.IsDisposed)usageWindow.Close();if(activityWindow!=null&&!activityWindow.IsDisposed)activityWindow.Close();if(insightsWindow!=null&&!insightsWindow.IsDisposed)insightsWindow.Close();if(setupWindow!=null&&!setupWindow.IsDisposed)setupWindow.Close();if(miniWindow!=null&&!miniWindow.IsDisposed)miniWindow.Shutdown();if(tokenWindow!=null)tokenWindow.Shutdown();if(chatWindow!=null&&!chatWindow.IsDisposed)chatWindow.Shutdown();tray.Dispose();foreach(var icon in icons)icon.Dispose();};
   Directory.CreateDirectory(DataRoot);
+  if(OfflineTest)return;
   jobWatchers=new[]{WatchJobs(Jobs),WatchJobs(SharedRequests)};
   initialJobScan=Task.Run(()=>LatestJob(Jobs));
   usageScan=Task.Run(()=>UsageLedger.Scan(SharedRequests));
@@ -347,12 +348,12 @@ partial class QwenStatus : Form {
    if(inputText.Text!=input)inputText.Text=input;if(outputText.Text!=result)outputText.Text=result;
    var usageData=data.ContainsKey("usage")?data["usage"] as Dictionary<string,object>:null;
    double prompt=Number(usageData,"prompt_tokens"),completion=Number(usageData,"completion_tokens");
-   int limit=Backend()=="ninfer"?245760:65536;
-   contextBar.Value=double.IsNaN(prompt)?0:(int)Math.Max(0,Math.Min(1000,Math.Round(prompt/limit*1000)));
+   double limit=Number(data,"context_tokens");if(double.IsNaN(limit))limit=Backend()=="strata"?reportedContext:Backend()=="ninfer"?229376:65536;
+   contextBar.Value=double.IsNaN(prompt)||double.IsNaN(limit)||limit<=0?0:(int)Math.Max(0,Math.Min(1000,Math.Round(prompt/limit*1000)));
    double generation=Number(data,"generation_seconds"),duration=Number(data,"request_seconds");
    double tokps=double.IsNaN(completion)?double.NaN:(!double.IsNaN(generation)&&generation>0?completion/generation:(!double.IsNaN(duration)&&duration>0?completion/duration:double.NaN));
    string speed=double.IsNaN(tokps)?"속도 —":(!double.IsNaN(generation)&&generation>0?"생성 속도 ":"전체 속도 ")+tokps.ToString("0.0")+" tok/s";
-   string tokens=double.IsNaN(prompt)?"입력 토큰 —":string.Format("입력 {0:N0} / {1:N0} 토큰 ({2:0.#}%)",prompt,limit,prompt/limit*100);
+   string tokens=double.IsNaN(prompt)?"입력 토큰 —":double.IsNaN(limit)||limit<=0?"입력 "+prompt.ToString("N0")+" 토큰 · 문맥 용량 미확인":string.Format("입력 {0:N0} / {1:N0} 토큰 ({2:0.#}%)",prompt,limit,prompt/limit*100);
    tokens+=" · 출력 "+(double.IsNaN(completion)?"—":completion.ToString("N0"))+" 토큰";
    DateTimeOffset created;string when=DateTimeOffset.TryParse(Field(data,"created_at"),out created)?created.ToLocalTime().ToString("HH:mm:ss"):"시간 미확인";
    jobInfo.Text="최근 요청 · "+SourceName(Field(data,"source"))+" · "+Phase(status,hasLive)+" · "+when+"\r\n"+tokens+"\r\n대기 "+Seconds(Number(data,"queue_seconds"))+" · 첫 토큰 "+Seconds(Number(data,"first_token_seconds"))+" · "+speed;
@@ -376,10 +377,12 @@ partial class QwenStatus : Form {
    return new GpuReading{Text=string.Format("GPU 전체 {0}% · VRAM {1:0.0}/{2:0.0} GiB ({3:0}%) · {4}°C{5}",values[3].Trim(),used/1024,total/1024,used/total*100,values[2].Trim(),double.IsNaN(watts)?"":" · "+watts.ToString("0")+"W"),Watts=watts,Temperature=double.Parse(values[2],System.Globalization.CultureInfo.InvariantCulture)};
   }}catch{return new GpuReading{Text="GPU 정보 사용 불가"};}
  }
- static string GetUrl(string url,int timeout=1000){var req=(HttpWebRequest)WebRequest.Create(url);req.Timeout=timeout;req.ReadWriteTimeout=timeout;using(var res=req.GetResponse())using(var reader=new StreamReader(res.GetResponseStream()))return reader.ReadToEnd();}
+ static string GetUrl(string url,int timeout=1000){var uri=new Uri(url);if(uri.Scheme!="http"||!(uri.Host=="127.0.0.1"||uri.Host=="localhost"||uri.Host=="[::1]")||uri.UserInfo!="")throw new InvalidOperationException("Local HTTP URL required");var req=(HttpWebRequest)WebRequest.Create(uri);req.Timeout=timeout;req.ReadWriteTimeout=timeout;req.AllowAutoRedirect=false;using(var res=(HttpWebResponse)req.GetResponse()){if(res.StatusCode!=HttpStatusCode.OK)throw new WebException("HTTP "+(int)res.StatusCode);using(var reader=new StreamReader(res.GetResponseStream()))return reader.ReadToEnd();}}
  static string Get(string suffix){return GetUrl(ServerUrl+suffix);}
- static string Backend(){try{return File.ReadAllText(BackendFile).Trim()=="ninfer"?"ninfer":"vLLM";}catch{return "vLLM";}}
+ static string Backend(){string name=Setting("backend","vllm");try{name=File.ReadAllText(BackendFile).Trim();}catch{}return name=="strata"?"strata":name=="ninfer"?"ninfer":"vLLM";}
  void ChooseBackend(string name){
+  if(Backend()=="strata"||name=="strata"){MessageBox.Show("Strata 연결 변경은 서버와 대기열을 명시적으로 종료한 뒤 설치 도우미에서 새 전용 경로로 준비하세요.","Qwen");return;}
+  if(name!="ninfer"&&name!="vllm"&&name!="vLLM")throw new ArgumentException("지원하지 않는 백엔드입니다.");
   try{Get("health");MessageBox.Show("현재 서버를 먼저 종료한 뒤 모델을 선택하세요.","Qwen");return;}catch{}
   try{
    File.WriteAllText(BackendFile,name=="ninfer"?"ninfer":"vllm");
@@ -391,17 +394,18 @@ partial class QwenStatus : Form {
    note.Text="다음 서버 시작: "+Backend()+(hermesUpdated?" · Hermes 재시작 후 문맥 설정 적용":" · Hermes 문맥 설정은 변경되지 않음");
   }catch(Exception error){MessageBox.Show(error.Message,"모델 선택 실패");}
  }
- static double Metric(string body,string name){var matches=Regex.Matches(body,@"^vllm:"+Regex.Escape(name)+@"(?:\{[^\r\n]*\})?\s+([0-9.eE+\-]+)",RegexOptions.Multiline);
+ static double Metric(string body,string name){if(body.TrimStart().StartsWith("{")){try{return StrataMetric(new JavaScriptSerializer().Deserialize<Dictionary<string,object>>(body),name);}catch{return double.NaN;}}var matches=Regex.Matches(body,@"^vllm:"+Regex.Escape(name)+@"(?:\{[^\r\n]*\})?\s+([0-9.eE+\-]+)",RegexOptions.Multiline);
   if(matches.Count==0){string alias=name=="generation_tokens_total"?"tokens_predicted_total":name=="num_requests_running"?"requests_processing":name=="num_requests_waiting"?"requests_deferred":name=="prompt_tokens_total"?"prompt_tokens_total":null;if(alias!=null)matches=Regex.Matches(body,@"^llamacpp:"+alias+@"(?:\{[^\r\n]*\})?\s+([0-9.eE+\-]+)",RegexOptions.Multiline);}if(matches.Count==0)return double.NaN;double sum=0;foreach(Match m in matches)sum+=double.Parse(m.Groups[1].Value,System.Globalization.CultureInfo.InvariantCulture);return sum;}
  static int Classify(bool healthy,bool loading,double running,double waiting){return !healthy?(loading?1:0):(!double.IsNaN(running)&&!double.IsNaN(waiting)?(running+waiting>0?3:2):4);}
  void Display(int status,double input,double output,double speed,double running,double waiting){
   string[] names={"꺼짐","준비 중","대기","작업 중","상태 확인 필요"};
-  Text="Qwen "+Backend()+" · "+names[status];state.Text=names[status]+" · "+Backend();state.ForeColor=new Color[]{Color.SlateGray,Color.RoyalBlue,Color.SeaGreen,Color.DarkOrange,Color.Firebrick}[status];
+  Text="Qwen "+BackendLabel()+" · "+names[status];state.Text=names[status]+" · "+BackendLabel();state.ForeColor=new Color[]{Color.SlateGray,Color.RoyalBlue,Color.SeaGreen,Color.DarkOrange,Color.Firebrick}[status];
   Icon=icons[status];tray.Icon=icons[status];tray.Text=Text;
   note.Text=status==0?"Codex가 직접 처리합니다.":status==1?"모델을 준비하고 있습니다.":status==3?string.Format("처리 {0}건 · 대기 {1}건",running,waiting):status==2?"필요한 작업을 Codex가 Qwen에 위임합니다.":"서버는 응답하지만 요청 통계를 읽지 못했습니다.";
-  start.Enabled=!action&&status==0&&(ManagedInstall()||File.Exists(ServerScript("start.sh")));stop.Enabled=!action&&status!=0&&(ManagedInstall()||File.Exists(ServerScript("stop.sh")));
+  if(Backend()=="strata")note.Text=(string.IsNullOrEmpty(reportedModel)?Setting("modelId","모델 확인 중"):reportedModel)+" · 문맥 "+(double.IsNaN(reportedContext)?"미확인":reportedContext.ToString("N0"))+"\r\n"+(ExternalStrata()?"기존 서버 연결 · 시작/종료는 원래 서버에서 직접 수행":status==1?"프로세스 준비 중 · loaded 확인 전에는 요청하지 않습니다.":note.Text);
+  start.Enabled=!action&&status==0&&!ExternalStrata()&&(ManagedInstall()||File.Exists(ServerScript("start.sh")));stop.Enabled=!action&&status!=0&&!ExternalStrata()&&(ManagedInstall()||File.Exists(ServerScript("stop.sh")));
   UpdateUsageText(input,output);
-  rate.Text=(double.IsNaN(speed)?"서버 출력 속도 —":string.Format("서버 출력 속도 {0:N1} tok/s",speed))+"\n"+gpuText;
+  rate.Text=(Backend()=="strata"?"입력 "+(double.IsNaN(nativeInputSpeed)?"—":nativeInputSpeed.ToString("N1"))+" · 출력 "+(double.IsNaN(speed)?"—":speed.ToString("N1"))+" tok/s (서버 제공)":double.IsNaN(speed)?"서버 출력 속도 —":string.Format("서버 출력 속도 {0:N1} tok/s",speed))+"\n"+gpuText;
   UpdateMini(status,speed,running,waiting);
  }
  void UpdateUsageText(double serverInput,double serverOutput){
@@ -410,10 +414,21 @@ partial class QwenStatus : Form {
   usage.Text+="\n이번 서버 "+(double.IsNaN(serverInput)||double.IsNaN(serverOutput)?"—":string.Format("{0:N0} 토큰",serverInput+serverOutput));
  }
  async Task Poll(){if(polling)return;polling=true;try{
-  double[] data=await Task.Run(()=>{try{Get("health");try{string m=Get("metrics");double running=Metric(m,"num_requests_running"),waiting=Metric(m,"num_requests_waiting");try{var q=new JavaScriptSerializer().Deserialize<Dictionary<string,object>>(GetUrl(QueueUrl));running=Math.Max(running,Convert.ToDouble(q["running"]));waiting+=Convert.ToDouble(q["waiting"]);}catch{}return new[]{1.0,running,waiting,Metric(m,"prompt_tokens_total"),Metric(m,"generation_tokens_total")};}catch{return new[]{1.0,double.NaN,double.NaN,double.NaN,double.NaN};}}catch{return new[]{0.0,0.0,0.0,double.NaN,double.NaN};}});
-  bool live=data[0]==1;bool loading=requested!=DateTime.MinValue&&(DateTime.UtcNow-requested).TotalMinutes<10;
+  double[] data=await Task.Run(()=>{try{
+   string h=Get("health");bool loaded=HealthLoaded(h);
+   if(Backend()=="strata"){
+    var health=new JavaScriptSerializer().Deserialize<Dictionary<string,object>>(h);reportedModel=Field(health,"model");reportedContext=Number(health,"max_context");
+    if(!loaded)return new[]{2.0,double.NaN,double.NaN,double.NaN,double.NaN,double.NaN,double.NaN};
+   }
+   try{string m=Get("metrics");double running=Metric(m,"num_requests_running"),waiting=Metric(m,"num_requests_waiting");
+    try{var q=new JavaScriptSerializer().Deserialize<Dictionary<string,object>>(GetUrl(QueueUrl));running=Math.Max(running,Convert.ToDouble(q["running"]));waiting+=Convert.ToDouble(q["waiting"]);}catch{}
+    return new[]{1.0,running,waiting,Metric(m,"prompt_tokens_total"),Metric(m,"generation_tokens_total"),Metric(m,"generation_tokens_per_second"),Metric(m,"prompt_tokens_per_second")};
+   }catch{return new[]{1.0,double.NaN,double.NaN,double.NaN,double.NaN,double.NaN,double.NaN};}
+  }catch{return new[]{0.0,0.0,0.0,double.NaN,double.NaN,double.NaN,double.NaN};}});
+  bool live=data[0]==1;bool loading=data[0]==2||(requested!=DateTime.MinValue&&(DateTime.UtcNow-requested).TotalMinutes<10);
   if(server!=null&&server.HasExited&&!live&&(!ManagedInstall()||server.ExitCode!=0))loading=false;if(live)requested=DateTime.MinValue;
   double speed=double.NaN;DateTime now=DateTime.UtcNow;if(live&&!double.IsNaN(data[4])){if(previousTokens>=0&&data[4]>=previousTokens)speed=(data[4]-previousTokens)/(now-previousTime).TotalSeconds;previousTokens=data[4];previousTime=now;}else previousTokens=-1;
+  if(Backend()=="strata"){speed=data[5];nativeInputSpeed=data[6];}
   if(gpuTask==null&&(now-lastGpuPoll).TotalSeconds>=(data[1]>0?2:10)){lastGpuPoll=now;gpuTask=Task.Run(()=>GpuStatus());}
   if(gpuTask!=null&&gpuTask.IsCompleted){if(gpuTask.Status==TaskStatus.RanToCompletion){gpuText=gpuTask.Result.Text;lastGpuReading=gpuTask.Result;ObserveGpuHeat(lastGpuReading);}else gpuText="GPU 정보 사용 불가";gpuTask=null;}
   powerBusy=!double.IsNaN(data[1])&&data[1]>0;
@@ -430,11 +445,11 @@ partial class QwenStatus : Form {
  }catch(Exception ex){note.Text=ex.Message;}finally{polling=false;}}
  static string WslPath(string path){if(path.Length<3||path[1]!=':'||path[2]!='\\')throw new Exception("WSL에서 사용할 Windows 드라이브 경로가 아닙니다.");return "/mnt/"+char.ToLowerInvariant(path[0])+path.Substring(2).Replace('\\','/');}
  static Process Run(string script){string distro=Environment.GetEnvironmentVariable("QWEN_WSL_DISTRIBUTION")??"Ubuntu-24.04",user=Environment.GetEnvironmentVariable("QWEN_WSL_USER")??"qwen";if(!Regex.IsMatch(distro,@"^[a-zA-Z0-9._-]+$")||!Regex.IsMatch(user,@"^[a-zA-Z0-9._-]+$"))throw new Exception("WSL 설정 이름을 확인하세요.");return Process.Start(new ProcessStartInfo("wsl.exe","-d "+distro+" -u "+user+" --exec bash \""+script+"\""){UseShellExecute=false,CreateNoWindow=true,WindowStyle=ProcessWindowStyle.Hidden});}
- async Task StartServer(){if(action)return;action=true;try{
+ async Task StartServer(){if(action||OfflineTest)return;if(ExternalStrata()){OpenInstaller();return;}action=true;start.Enabled=stop.Enabled=false;try{
   bool exists=await Task.Run(()=>{try{Get("health");return true;}catch{return false;}});
-  if(!exists){string script=ServerScript("start.sh");if(!File.Exists(script)&&!ManagedInstall())throw new Exception("설치 도우미에서 모델 서버를 먼저 준비하세요.");server=File.Exists(script)?Run(WslPath(script)):RunManaged("StartBackend");requested=DateTime.UtcNow;if(!File.Exists(script)){bool ended=await Task.Run(()=>server.WaitForExit(30000));if(ended&&server.ExitCode!=0)throw new Exception("서버 시작 실패. 설치 도우미에서 연결을 확인하세요.\n상세 로그: "+ManagedLog());}}
+  if(!exists){string script=ServerScript("start.sh");bool legacy=Backend()!="strata"&&File.Exists(script);if(!legacy&&!ManagedInstall())throw new Exception("설치 도우미에서 모델 서버를 먼저 준비하세요.");server=legacy?Run(WslPath(script)):RunManaged("StartBackend");requested=DateTime.UtcNow;if(!legacy){bool ended=await Task.Run(()=>server.WaitForExit(30000));if(ended&&server.ExitCode!=0)throw new Exception("서버 시작 실패. 설치 도우미에서 연결을 확인하세요.\n상세 로그: "+ManagedLog());}}
  }catch(Exception ex){MessageBox.Show(ex.Message,"Qwen");}finally{action=false;}await Poll();}
- async Task StopServer(){if(action)return;action=true;suppressOfflineUntil=DateTime.UtcNow.AddMinutes(2);start.Enabled=stop.Enabled=false;note.Text="서버 종료 중…";try{string script=ServerScript("stop.sh");if(!File.Exists(script)&&!ManagedInstall())throw new Exception("서버 종료 구성이 없습니다.");using(var p=File.Exists(script)?Run(WslPath(script)):RunManaged("StopBackend")){bool ended=await Task.Run(()=>p.WaitForExit(45000));if(!ended||p.ExitCode!=0)throw new Exception("서버 종료를 확인하지 못했습니다.\n관리 설치 로그: "+ManagedLog());}requested=DateTime.MinValue;}catch(Exception ex){MessageBox.Show(ex.Message,"Qwen");}finally{action=false;}await Poll();}
+ async Task StopServer(){if(action||OfflineTest||ExternalStrata())return;action=true;suppressOfflineUntil=DateTime.UtcNow.AddMinutes(2);start.Enabled=stop.Enabled=false;note.Text="서버 종료 중…";try{string script=ServerScript("stop.sh");bool legacy=Backend()!="strata"&&File.Exists(script);if(!legacy&&!ManagedInstall())throw new Exception("서버 종료 구성이 없습니다.");using(var p=legacy?Run(WslPath(script)):RunManaged("StopBackend")){bool ended=await Task.Run(()=>p.WaitForExit(45000));if(!ended||p.ExitCode!=0)throw new Exception("서버 종료를 확인하지 못했습니다.\n관리 설치 로그: "+ManagedLog());}requested=DateTime.MinValue;}catch(Exception ex){MessageBox.Show(ex.Message,"Qwen");}finally{action=false;}await Poll();}
  static void HistoryRecoveryTest(string root){
   string directory=Path.Combine(root,"late-requests");var changes=new ConcurrentQueue<string>();DateTime now=DateTime.UtcNow;
   using(var watcher=new JobWatcher(directory,path=>changes.Enqueue(path))){
@@ -478,6 +493,14 @@ partial class QwenStatus : Form {
   }finally{Directory.Delete(directory,true);}
  }
  [STAThread] static void Main(string[] args){
+  try{if(OfflineTest)Application.SetUnhandledExceptionMode(UnhandledExceptionMode.ThrowException);MainCore(args);}
+  catch(Exception ex){
+   if(!OfflineTest)throw;
+   Directory.CreateDirectory(DataRoot);string mode=args.Length>0?args[0].TrimStart('-'):"offline-test";
+   File.WriteAllText(Path.Combine(DataRoot,mode=="core-test"?"core-test-result.txt":mode+".txt"),"FAIL: "+ex);Environment.ExitCode=1;
+  }
+ }
+ static void MainCore(string[] args){
   SetCurrentProcessExplicitAppUserModelID("Local.QwenStatus.App");Application.EnableVisualStyles();Application.SetCompatibleTextRenderingDefault(false);
   Directory.CreateDirectory(DataRoot);
   if(args.Length>0&&args[0]=="--core-test"){try{CoreTest();File.WriteAllText(Path.Combine(DataRoot,"core-test-result.txt"),"PASS");}catch(Exception ex){File.WriteAllText(Path.Combine(DataRoot,"core-test-result.txt"),"FAIL: "+ex);Environment.ExitCode=1;}return;}
@@ -487,6 +510,7 @@ partial class QwenStatus : Form {
   if(args.Length>0&&args[0]=="--chat-test"){ChatWindow.Test();return;}
   if(args.Length>0&&args[0]=="--delegation-test"){DelegationTest();return;}
   if(args.Length>0&&args[0]=="--install-test"){InstallerWindow.Test();return;}
+  if(args.Length>0&&args[0]=="--strata-test"){StrataTest();return;}
   if(args.Length>0&&args[0]=="--chat-live-test"){ChatWindow.LiveTest();return;}
   if(args.Length>0&&args[0]=="--insights-ui-test"){InsightsUiTest();return;}
   if(args.Length>0&&args[0]=="--token-test-ui"){TokenTestWindow.Test();return;}
@@ -510,7 +534,8 @@ partial class QwenStatus : Form {
    File.WriteAllText(Path.Combine(DataRoot,"usage-test.txt"),"PASS: historical totals, incomplete usage, queued exclusion, incremental correction and no double counting");return;
   }
   if(args.Length>0&&args[0]=="--status-test"){
-   string directory=Path.Combine(Path.GetTempPath(),"qwen-status-"+Guid.NewGuid().ToString());Directory.CreateDirectory(directory);
+   Directory.CreateDirectory(SharedRequests);
+   string directory=Path.Combine(DataRoot,"status-fixture-"+Guid.NewGuid().ToString());Directory.CreateDirectory(directory);
    string fixture=Path.Combine(directory,Guid.NewGuid().ToString()+".json");
    try{using(var app=new QwenStatus()){
     app.hideContentBox.Checked=false;
@@ -521,7 +546,7 @@ partial class QwenStatus : Form {
     if(!app.jobInfo.Text.Contains("첫 토큰 준비 중"))throw new Exception("First token phase failed");
     File.WriteAllText(Path.ChangeExtension(fixture,"live.txt"),"생성 중인 답변");app.ShowJob();
     if(!app.jobInfo.Text.Contains("답변 생성 중")||!app.outputText.Text.Contains("생성 중인 답변"))throw new Exception("Streaming phase failed");
-   long halfContext=Backend()=="ninfer"?122880:32768;
+   long halfContext=Backend()=="ninfer"?114688:32768;
    File.WriteAllText(fixture,"{\"status\":\"completed\",\"source\":\"direct-chat\",\"usage\":{\"prompt_tokens\":"+halfContext+",\"completion_tokens\":100},\"queue_seconds\":1,\"first_token_seconds\":2,\"generation_seconds\":4}");app.ShowJob();
    if(app.contextBar.Value!=500||!app.jobInfo.Text.Contains("25.0 tok/s")||!app.jobInfo.Text.Contains("50%"))throw new Exception("Usage display failed");
     using(var watcher=app.WatchJobs(directory)){
