@@ -32,7 +32,7 @@ partial class QwenStatus : Form {
  static readonly string ServerUrl=Setting("serverUrl","http://127.0.0.1:18021/").TrimEnd('/')+"/";
  static readonly string QueueUrl=Setting("queueUrl","http://127.0.0.1:18022/queue");
  static readonly string PrivacyFile=Path.Combine(DataRoot,"hide-content.txt");
- Label state=new Label(), note=new Label(), usage=new Label(), rate=new Label(); Button usageButton=new Button(); CheckBox hideContentBox=new CheckBox();
+ Label state=new Label(), note=new Label(), usage=new Label(), rate=new Label(); Button usageButton=new Button(); CheckBox hideContentBox=new CheckBox(); ToolTip usageTip=new ToolTip{AutoPopDelay=15000};
  Button start=new Button(), stop=new Button(); ToolStripMenuItem startMenu,stopMenu;
  static readonly string Jobs=SettingPath("jobsDirectory",Path.Combine(RuntimePath("worker"),"jobs"));
  static Dictionary<string,object> LoadSettings(){if(OfflineTest)return new Dictionary<string,object>{{"backend","strata"},{"modelId","fixture-flash-next"},{"contextTokens",262144},{"serverUrl","http://127.0.0.1:1/"},{"queueUrl","http://127.0.0.1:1/queue"},{"gatewayDirectory",Path.Combine(DataRoot,"gateway")},{"jobsDirectory",Path.Combine(DataRoot,"jobs")},{"backendFile",Path.Combine(DataRoot,"backend.txt")},{"managedInstallRoot",Path.Combine(DataRoot,"managed")}};try{string path=Path.Combine(DataRoot,"settings.json");return File.Exists(path)?new JavaScriptSerializer().Deserialize<Dictionary<string,object>>(File.ReadAllText(path)):new Dictionary<string,object>();}catch{return new Dictionary<string,object>();}}
@@ -266,14 +266,14 @@ partial class QwenStatus : Form {
   tray.ContextMenuStrip=menu;tray.Icon=icons[4];tray.Text="Qwen 상태";tray.Visible=true;tray.MouseClick+=(s,e)=>{if(e.Button==MouseButtons.Left)Restore();};
   FormClosing+=(s,e)=>{if(!quitting&&e.CloseReason==CloseReason.UserClosing){e.Cancel=true;Hide();}};
   Resize+=(s,e)=>{if(WindowState==FormWindowState.Minimized)Hide();};
-  FormClosed+=(s,e)=>{timer.Stop();StopPowerMonitor();CloseDelegation();if(installerWindow!=null&&!installerWindow.IsDisposed)installerWindow.Dispose();if(jobWatchers!=null)foreach(var watcher in jobWatchers)if(watcher!=null)watcher.Dispose();if(usageWindow!=null&&!usageWindow.IsDisposed)usageWindow.Close();if(activityWindow!=null&&!activityWindow.IsDisposed)activityWindow.Close();if(insightsWindow!=null&&!insightsWindow.IsDisposed)insightsWindow.Close();if(setupWindow!=null&&!setupWindow.IsDisposed)setupWindow.Close();if(miniWindow!=null&&!miniWindow.IsDisposed)miniWindow.Shutdown();if(tokenWindow!=null)tokenWindow.Shutdown();if(chatWindow!=null&&!chatWindow.IsDisposed)chatWindow.Shutdown();tray.Dispose();foreach(var icon in icons)icon.Dispose();};
+  FormClosed+=(s,e)=>{timer.Stop();usageTip.Dispose();StopPowerMonitor();CloseDelegation();if(installerWindow!=null&&!installerWindow.IsDisposed)installerWindow.Dispose();if(jobWatchers!=null)foreach(var watcher in jobWatchers)if(watcher!=null)watcher.Dispose();if(usageWindow!=null&&!usageWindow.IsDisposed)usageWindow.Close();if(activityWindow!=null&&!activityWindow.IsDisposed)activityWindow.Close();if(insightsWindow!=null&&!insightsWindow.IsDisposed)insightsWindow.Close();if(setupWindow!=null&&!setupWindow.IsDisposed)setupWindow.Close();if(miniWindow!=null&&!miniWindow.IsDisposed)miniWindow.Shutdown();if(tokenWindow!=null)tokenWindow.Shutdown();if(chatWindow!=null&&!chatWindow.IsDisposed)chatWindow.Shutdown();tray.Dispose();foreach(var icon in icons)icon.Dispose();};
   Directory.CreateDirectory(DataRoot);
   if(OfflineTest)return;
   jobWatchers=new[]{WatchJobs(Jobs),WatchJobs(SharedRequests)};
   initialJobScan=Task.Run(()=>LatestJob(Jobs));
   usageScan=Task.Run(()=>UsageLedger.Scan(SharedRequests));
   StartPowerMonitor();
-  timer.Interval=2000;timer.Tick+=async(s,e)=>await Poll();timer.Start();
+  timer.Interval=1000;timer.Tick+=async(s,e)=>await Poll();timer.Start();
  }
  void OpenTokenTest(){if(tokenWindow==null||tokenWindow.IsDisposed)tokenWindow=new TokenTestWindow();tokenWindow.Show();tokenWindow.WindowState=FormWindowState.Normal;tokenWindow.Activate();}
  void OpenActivity(){if(activityWindow==null||activityWindow.IsDisposed)activityWindow=new ActivityWindow();else activityWindow.Reload();activityWindow.Show();activityWindow.WindowState=FormWindowState.Normal;activityWindow.Activate();}
@@ -428,9 +428,15 @@ partial class QwenStatus : Form {
  void UpdateUsageText(double serverInput,double serverOutput){
   lastServerInput=serverInput;lastServerOutput=serverOutput;
   usage.Text=!Directory.Exists(SharedRequests)?"공통 대기열 기록 폴더 미연결":usageLedger==null?"기록 누적 계산 중…":usageLedger.Error!=null?"기록 누적 확인 필요":string.Format("기록 누적 {0:N0} 토큰 · {1:N0}건 · API 환산 {4}\n입력 {2:N0} · 출력 {3:N0}",usageLedger.Input+usageLedger.Output,usageLedger.Count,usageLedger.Input,usageLedger.Output,ApiPricing.Current.Money(ApiPricing.Current.TotalCost(usageLedger.Input,usageLedger.Output)));
-  usage.Text+="\n이번 서버 "+(double.IsNaN(serverInput)||double.IsNaN(serverOutput)?"—":string.Format("{0:N0} 토큰",serverInput+serverOutput));
+  if(usage.Text.IndexOf('\n')<0)usage.Text+="\n";
+  string full=serverUsage.Line(ApiPricing.Current),line=full;
+  if(TextRenderer.MeasureText(line,usage.Font,Size.Empty,TextFormatFlags.SingleLine).Width>usage.ClientSize.Width-4)line=serverUsage.Line(ApiPricing.Current,true);
+  usage.Text+="\n"+line;
+  usageTip.SetToolTip(usage,full+"\n"+serverUsage.Hint);
  }
+ void ApplyServerUsage(ServerUsageSnapshot snapshot,double input,double output){serverUsage=snapshot;UpdateUsageText(input,output);}
  async Task Poll(){if(polling)return;polling=true;try{
+  var nextServerUsage=ServerUsageSnapshot.Missing;
   double[] data=await Task.Run(()=>{try{
    if(Backend()!="strata")throw new InvalidOperationException("Strata만 지원합니다.");
    string h=Get("health");bool loaded=HealthLoaded(h);
@@ -438,11 +444,13 @@ partial class QwenStatus : Form {
     var health=new JavaScriptSerializer().Deserialize<Dictionary<string,object>>(h);reportedModel=Field(health,"model");reportedContext=Number(health,"max_context");
     if(!loaded)return new[]{2.0,double.NaN,double.NaN,double.NaN,double.NaN,double.NaN,double.NaN};
    }
-   try{string m=Get("metrics");double running=Metric(m,"num_requests_running"),waiting=Metric(m,"num_requests_waiting");
+   try{string m=Get("metrics");nextServerUsage=ReadServerUsage(m,loaded);double running=Metric(m,"num_requests_running"),waiting=Metric(m,"num_requests_waiting");
     try{var q=new JavaScriptSerializer().Deserialize<Dictionary<string,object>>(GetUrl(QueueUrl));running=Math.Max(running,Convert.ToDouble(q["running"]));waiting+=Convert.ToDouble(q["waiting"]);}catch{}
     return new[]{1.0,running,waiting,Metric(m,"prompt_tokens_total"),Metric(m,"generation_tokens_total"),Metric(m,"generation_tokens_per_second"),Metric(m,"prompt_tokens_per_second")};
-   }catch{return new[]{1.0,double.NaN,double.NaN,double.NaN,double.NaN,double.NaN,double.NaN};}
+   }catch{nextServerUsage=ServerUsageSnapshot.Missing;return new[]{1.0,double.NaN,double.NaN,double.NaN,double.NaN,double.NaN,double.NaN};}
   }catch{return new[]{0.0,0.0,0.0,double.NaN,double.NaN,double.NaN,double.NaN};}});
+  if(IsDisposed||quitting)return;
+  ApplyServerUsage(data[0]==1?nextServerUsage:ServerUsageSnapshot.Missing,data[3],data[4]);
   bool live=data[0]==1;bool loading=data[0]==2||(requested!=DateTime.MinValue&&(DateTime.UtcNow-requested).TotalMinutes<10);
   if(server!=null&&server.HasExited&&!live&&(!ManagedInstall()||server.ExitCode!=0))loading=false;if(live)requested=DateTime.MinValue;
   double speed=double.NaN;DateTime now=DateTime.UtcNow;if(live&&!double.IsNaN(data[4])){if(previousTokens>=0&&data[4]>=previousTokens)speed=(data[4]-previousTokens)/(now-previousTime).TotalSeconds;previousTokens=data[4];previousTime=now;}else previousTokens=-1;
@@ -460,7 +468,7 @@ partial class QwenStatus : Form {
   if(ledgerChanged&&insightsWindow!=null&&!insightsWindow.IsDisposed&&insightsWindow.Visible)insightsWindow.OnLedgerUpdated();
   int status=Classify(live,loading,data[1],data[2]);Display(status,data[3],data[4],speed,data[1],data[2]);CheckImportantEvents(status);
   if(Visible)RefreshJobs();
- }catch(Exception ex){note.Text=ex.Message;}finally{polling=false;}}
+ }catch(Exception ex){if(!IsDisposed&&!quitting){ApplyServerUsage(ServerUsageSnapshot.Missing,double.NaN,double.NaN);note.Text=ex.Message;}}finally{polling=false;}}
  async Task RequestExternalMode(string mode){
   if(action||OfflineTest)return;
   action=true;start.Enabled=stop.Enabled=startMenu.Enabled=stopMenu.Enabled=false;suppressOfflineUntil=DateTime.UtcNow.AddMinutes(2);note.Text=mode=="auto"?"기존 자동 관리자에 재개 요청 중…":"기존 자동 관리자에 일시정지 요청 중…";

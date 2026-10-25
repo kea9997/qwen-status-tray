@@ -36,6 +36,43 @@ partial class QwenStatus {
   }
   return double.NaN;
  }
+ sealed class ServerUsageSnapshot {
+  internal static readonly ServerUsageSnapshot Missing=new ServerUsageSnapshot();
+  internal readonly bool Available,LiveIncluded,CompletedOnly;internal readonly long Input,Output;
+  ServerUsageSnapshot(){}
+  internal ServerUsageSnapshot(long input,long output,bool live=false,bool completedOnly=false){Available=true;Input=input;Output=output;LiveIncluded=live;CompletedOnly=completedOnly;}
+  internal decimal Cost(ApiPricing price){return price.TotalCost(Input,Output);}
+  static string Compact(decimal value){decimal unit=value>=10000000000000000m?10000000000000000m:value>=1000000000000m?1000000000000m:value>=100000000m?100000000m:10000m;return value<10000m?value.ToString("0.######",System.Globalization.CultureInfo.InvariantCulture):(value/unit).ToString("#,0.##",System.Globalization.CultureInfo.InvariantCulture)+(unit==10000000000000000m?"경":unit==1000000000000m?"조":unit==100000000m?"억":"만");}
+  internal string Line(ApiPricing price,bool compact=false){
+   if(!Available)return "이번 서버 토큰·환산 미확인";
+   decimal total=(decimal)Input+Output,won=price.Krw(Cost(price));
+   string count=compact?Compact(total):total.ToString("N0",System.Globalization.CultureInfo.InvariantCulture),money=compact&&won>=10000m?Compact(won)+"원":price.Money(Cost(price));
+   return "이번 서버 "+(compact?"약 ":"")+count+"토큰 · 환산 "+money+(LiveIncluded?" (진행 포함·추정)":CompletedOnly?" (완료분·병렬 미포함)":"");
+  }
+  internal string Hint {get{return (Available?"입력 "+Input.ToString("N0",System.Globalization.CultureInfo.InvariantCulture)+" · 출력 "+Output.ToString("N0",System.Globalization.CultureInfo.InvariantCulture)+" 토큰\n":"")+(!Available?"서버 통계 미확인 · 이전 값은 표시하지 않습니다.":LiveIncluded?"서버 완료분 + 현재 요청의 전체 예정 입력/실제 생성 토큰입니다. 프리필 중 입력은 추정입니다. 기록 누적과 합산하지 않습니다.":CompletedOnly?"완료 요청만 포함합니다. 병렬/진행 요청의 전체 합계를 확인할 수 없습니다.":"서버 시작 이후 완료분입니다. 서버 재시작 시 초기화되며 기록 누적과 별도입니다.");}}
+ }
+ ServerUsageSnapshot serverUsage=ServerUsageSnapshot.Missing;
+ static bool ServerTokenCount(Dictionary<string,object> data,string key,out long count){
+  count=0;object raw;if(data==null||!data.TryGetValue(key,out raw)||raw==null)return false;
+  if(raw is double){double n=(double)raw;if(double.IsNaN(n)||double.IsInfinity(n)||n<0||n>9007199254740991d||Math.Floor(n)!=n)return false;count=(long)n;return true;}
+  if(!(raw is int||raw is long||raw is decimal))return false;
+  decimal value=Convert.ToDecimal(raw);if(value<0||value>long.MaxValue||decimal.Truncate(value)!=value)return false;count=(long)value;return true;
+ }
+ static ServerUsageSnapshot ReadServerUsage(string body,bool ready){
+  if(!ready)return ServerUsageSnapshot.Missing;
+  try{
+   var data=new JavaScriptSerializer().Deserialize<Dictionary<string,object>>(body);var totals=ObjectAt(data,"totals");var live=ObjectAt(data,"live");long input,output,prompt,generated,running;
+   if(!ServerTokenCount(totals,"prompt_tokens",out input)||!ServerTokenCount(totals,"output_tokens",out output)||live==null)return ServerUsageSnapshot.Missing;
+   string state=Field(live,"state");bool active=state=="reading"||state=="generating";
+   if(!active&&state!="idle")return ServerUsageSnapshot.Missing;
+   // Parallel metrics may expose only the newest request; never add it as a complete live total.
+   foreach(var part in new[]{data,ObjectAt(data,"engine"),live})if(part!=null){object flag;if(part.ContainsKey("slots")||part.ContainsKey("replicas")||(part.TryGetValue("parallel",out flag)&&(!(flag is bool)||(bool)flag)))return new ServerUsageSnapshot(input,output,false,true);}
+   if(live.ContainsKey("running")){if(!ServerTokenCount(live,"running",out running))return ServerUsageSnapshot.Missing;if(running>1||(!active&&running>0))return new ServerUsageSnapshot(input,output,false,true);if(active&&running!=1)return ServerUsageSnapshot.Missing;}
+   if(!active)return new ServerUsageSnapshot(input,output);
+   if(!ServerTokenCount(live,"prompt_tokens",out prompt)||!ServerTokenCount(live,"generated",out generated))return ServerUsageSnapshot.Missing;
+   return new ServerUsageSnapshot(checked(input+prompt),checked(output+generated),true);
+  }catch{return ServerUsageSnapshot.Missing;}
+ }
  static bool HealthLoaded(string body){return Backend()=="strata"&&HealthLoaded(body,true,Setting("modelId",""));}
  static bool HealthLoaded(string body,bool strata,string expected){
   if(string.IsNullOrWhiteSpace(body)||!body.TrimStart().StartsWith("{"))return !strata;
@@ -70,6 +107,98 @@ partial class QwenStatus {
   if(File.Exists(receipt)){var c=ObjectAt(new JavaScriptSerializer().Deserialize<Dictionary<string,object>>(File.ReadAllText(receipt)),"connection");if(c!=null&&Field(c,"backend")==backend){info.EnvironmentVariables["QWEN_MODEL_ID"]=Field(c,"model");info.EnvironmentVariables["QWEN_UPSTREAM_URL"]=Field(c,"upstream");info.EnvironmentVariables["QWEN_CONTEXT_TOKENS"]=Field(c,"contextTokens");}}
  }
  double reportedContext=double.NaN,nativeInputSpeed=double.NaN;string reportedModel="";
+ static Dictionary<string,object> ServerUsageFixture(object input,object output,string state,object prompt=null,object generated=null){
+  return new Dictionary<string,object>{{"totals",new Dictionary<string,object>{{"since",123},{"prompt_tokens",input},{"output_tokens",output}}},{"live",new Dictionary<string,object>{{"state",state},{"prompt_tokens",prompt},{"generated",generated}}}};
+ }
+ static void ServerUsageTest(QwenStatus app){
+  if(!OfflineTest)throw new InvalidOperationException("Server usage fixtures require isolated offline mode.");
+  var json=new JavaScriptSerializer();var price=new ApiPricing();
+  Func<Dictionary<string,object>,ServerUsageSnapshot> read=data=>ReadServerUsage(json.Serialize(data),true);
+  var completed=read(ServerUsageFixture(1000,100,"idle"));
+  var reading=read(ServerUsageFixture(1000,100,"reading",200,0));
+  var generating=read(ServerUsageFixture(1000,100,"generating",200,10));
+  var finalized=read(ServerUsageFixture(1200,110,"idle"));
+  var next=read(ServerUsageFixture(1200,110,"reading",50,0));
+  if(!completed.Available||completed.LiveIncluded||completed.CompletedOnly||completed.Input!=1000||completed.Output!=100)throw new Exception("Completed server totals changed");
+  if(!reading.Available||!reading.LiveIncluded||reading.Input!=1200||reading.Output!=100||!reading.Line(price).Contains("추정")||!reading.Hint.Contains("전체 예정 입력"))throw new Exception("Prefill planned input was lost or presented as measured prefill");
+  if(generating.Input!=1200||generating.Output!=110||price.Krw(generating.Cost(price)-reading.Cost(price))!=0.1325m)throw new Exception("Actual generated tokens did not increase server KRW");
+  if(finalized.LiveIncluded||finalized.Input!=generating.Input||finalized.Output!=generating.Output||finalized.Cost(price)!=generating.Cost(price))throw new Exception("Finalize double-counted or dropped live usage");
+  if(!next.LiveIncluded||next.Input!=1250||next.Output!=110)throw new Exception("Next request reused prior live tokens");
+  var leftover=read(ServerUsageFixture(1200,110,"idle",200,10));
+  if(leftover.Cost(price)!=finalized.Cost(price)||leftover.LiveIncluded)throw new Exception("Idle retained stale live counters");
+  var resetData=ServerUsageFixture(5,2,"idle");ObjectAt(resetData,"totals")["since"]=456;
+  var reset=read(resetData);var zero=read(ServerUsageFixture(0,0,"idle"));
+  if(!reset.Available||reset.Input!=5||reset.Output!=2||reset.Cost(price)>=finalized.Cost(price)||!zero.Available||zero.Cost(price)!=0m)throw new Exception("Server epoch reset or confirmed zero was hidden");
+  string activeJson=json.Serialize(ServerUsageFixture(1000,100,"generating",200,10));
+  if(Metric(activeJson,"prompt_tokens_total")!=1000||Metric(activeJson,"generation_tokens_total")!=100)throw new Exception("Live estimate changed canonical completed counters");
+  foreach(string invalid in new[]{"", "not JSON", "{", "null", "[]", "{}", "{\"totals\":{}}"})if(ReadServerUsage(invalid,true).Available)throw new Exception("Malformed server metrics produced a cost: "+invalid);
+  if(ReadServerUsage(activeJson,false).Available)throw new Exception("Offline/unloaded server retained usage");
+  foreach(string state in new[]{null,"","unloaded","unknown","queued"})if(read(ServerUsageFixture(1000,100,state,200,0)).Available)throw new Exception("Unknown live state was accepted");
+  foreach(string section in new[]{"totals","live"}){var data=ServerUsageFixture(1000,100,"reading",200,0);data.Remove(section);if(read(data).Available)throw new Exception("Missing server usage section was accepted");}
+  foreach(string section in new[]{"totals","live"})foreach(string key in section=="totals"?new[]{"prompt_tokens","output_tokens"}:new[]{"state","prompt_tokens","generated"}){
+   var data=ServerUsageFixture(1000,100,"reading",200,0);ObjectAt(data,section).Remove(key);if(read(data).Available)throw new Exception("Missing server usage field was accepted: "+section+"."+key);
+  }
+  foreach(object invalid in new object[]{null,-1,-1L,-0.5m,1.5m,"42","NaN",true,long.MaxValue+1m}){
+   foreach(string section in new[]{"totals","live"})foreach(string key in section=="totals"?new[]{"prompt_tokens","output_tokens"}:new[]{"prompt_tokens","generated"}){
+    var data=ServerUsageFixture(1000,100,"reading",200,0);ObjectAt(data,section)[key]=invalid;if(read(data).Available)throw new Exception("Invalid server token count was accepted: "+section+"."+key);
+   }
+  }
+  long count;
+  foreach(object invalid in new object[]{double.NaN,double.PositiveInfinity,double.NegativeInfinity,1.25d,9007199254740992d})if(ServerTokenCount(new Dictionary<string,object>{{"n",invalid}},"n",out count))throw new Exception("Unsafe floating server token count accepted");
+  foreach(object valid in new object[]{0,42L,42m,42d,9007199254740991d,long.MaxValue})if(!ServerTokenCount(new Dictionary<string,object>{{"n",valid}},"n",out count))throw new Exception("Exact integer server token count rejected");
+  if(read(ServerUsageFixture(long.MaxValue,0,"generating",1,0)).Available||read(ServerUsageFixture(0,long.MaxValue,"generating",0,1)).Available)throw new Exception("Overflowing live counter was accepted");
+  foreach(string section in new[]{"root","engine","live"})foreach(string key in new[]{"parallel","slots","replicas"}){
+   var data=ServerUsageFixture(1000,100,"generating",200,10);data["engine"]=new Dictionary<string,object>();
+   var part=section=="root"?data:ObjectAt(data,section);part[key]=key=="parallel"?(object)true:2;
+   var partial=read(data);if(!partial.Available||!partial.CompletedOnly||partial.LiveIncluded||partial.Input!=1000||partial.Output!=100||!partial.Line(price).Contains("완료분"))throw new Exception("Partial parallel metrics claimed complete live usage");
+  }
+  foreach(object flag in new object[]{null,"false",2}){var data=ServerUsageFixture(1000,100,"reading",200,0);data["parallel"]=flag;if(!read(data).CompletedOnly)throw new Exception("Unknown parallel flag claimed complete live usage");}
+  var serial=ServerUsageFixture(1000,100,"reading",200,0);serial["parallel"]=false;ObjectAt(serial,"live")["running"]=1;
+  if(!read(serial).LiveIncluded)throw new Exception("Explicit single active request rejected");
+  ObjectAt(serial,"live")["running"]=2;if(!read(serial).CompletedOnly)throw new Exception("Multiple active requests were summed as one");
+  ObjectAt(serial,"live")["state"]="idle";if(!read(serial).CompletedOnly)throw new Exception("Idle with outstanding requests claimed a complete total");
+  ObjectAt(serial,"live")["state"]="reading";
+  foreach(object invalid in new object[]{0,-1,1.5m,null,"1",true}){ObjectAt(serial,"live")["running"]=invalid;if(read(serial).Available)throw new Exception("Invalid/contradictory running count accepted");}
+  var realistic=read(ServerUsageFixture(46758530,360584,"reading",194775,0));
+  if(realistic.Input!=46953305||realistic.Output!=360584||price.Krw(realistic.Cost(price))!=129203.99625m)throw new Exception("Realistic server KRW estimate incorrect");
+  var huge=read(ServerUsageFixture(long.MaxValue,long.MaxValue,"idle"));
+  if(!huge.Available||!huge.Line(price).Contains("18,446,744,073,709,551,614"))throw new Exception("Cross-direction token total overflowed");
+  var savedPrice=ApiPricing.Current;var savedLedger=app.usageLedger;var savedSnapshot=app.serverUsage;double savedInput=app.lastServerInput,savedOutput=app.lastServerOutput;
+  string directory=Path.Combine(DataRoot,"server-usage-"+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(directory);Directory.CreateDirectory(SharedRequests);
+  try{
+   ApiPricing.Current=price;
+   for(int i=0;i<12;i++)File.WriteAllText(Path.Combine(directory,Guid.NewGuid()+".json"),json.Serialize(new{status="completed",usage=new{prompt_tokens=i==11?4101:4000,completion_tokens=i==11?328:100}}));
+   app.usageLedger=UsageLedger.Scan(directory);app.ApplyServerUsage(completed,1000,100);
+   string history=string.Join("\n",app.usage.Text.Split('\n').Take(2));
+   if(!history.Contains((49529).ToString("N0"))||!history.Contains("146.39원")||app.usageLedger.Count!=12)throw new Exception("Historical usage fixture incorrect");
+   Action<ServerUsageSnapshot,string> preview=(sample,name)=>{
+    app.ApplyServerUsage(sample,double.NaN,double.NaN);string[] lines=app.usage.Text.Split('\n');
+    if(lines.Length!=3||string.Join("\n",lines.Take(2))!=history||app.usageLedger.Input!=48101||app.usageLedger.Output!=1428||app.usageLedger.Count!=12||Directory.GetFiles(directory).Length!=12)throw new Exception("Server sample changed history or usage layout");
+    if(TextRenderer.MeasureText(lines[2],app.usage.Font,Size.Empty,TextFormatFlags.SingleLine).Width>app.usage.ClientSize.Width-4||TextRenderer.MeasureText(app.usage.Text,app.usage.Font,new Size(app.usage.ClientSize.Width,1000),TextFormatFlags.WordBreak).Height>app.usage.ClientSize.Height||app.usage.Bounds.IntersectsWith(app.usageButton.Bounds))throw new Exception("Server comparison clipped the existing three-line usage area");
+    if(name!=null)using(var image=new Bitmap(app.Width,app.Height)){app.DrawToBitmap(image,new Rectangle(Point.Empty,image.Size));image.Save(Path.Combine(DataRoot,"strata-server-usage-"+name+".png"));}
+   };
+   preview(reading,"reading");preview(generating,"generating");preview(finalized,"finalized");preview(next,null);preview(reset,"reset");preview(zero,null);preview(realistic,"realistic");
+   string tip=app.usageTip.GetToolTip(app.usage);
+   if(!tip.Contains("47,313,889")||!tip.Contains("46,953,305")||!tip.Contains("360,584")||!tip.Contains("전체 예정 입력")||!tip.Contains("추정")||!tip.Contains(price.Money(realistic.Cost(price))))throw new Exception("Exact server usage or prefill caveat missing from tooltip");
+   preview(new ServerUsageSnapshot(1000,100,false,true),"parallel");preview(huge,"huge");
+   ApiPricing.Current=new ApiPricing{InputRate=1000,OutputRate=1000,UsdToKrw=ApiPricing.MaxUsdToKrw};
+   app.UpdateUsageText(app.lastServerInput,app.lastServerOutput);history=string.Join("\n",app.usage.Text.Split('\n').Take(2));preview(huge,"max-price");
+   ApiPricing.Current=price;app.UpdateUsageText(app.lastServerInput,app.lastServerOutput);history=string.Join("\n",app.usage.Text.Split('\n').Take(2));
+   foreach(var missing in new[]{ReadServerUsage("{",true),ReadServerUsage(activeJson,false),ServerUsageSnapshot.Missing}){
+    preview(generating,null);preview(missing,"missing");if(!app.usage.Text.Split('\n')[2].Contains("미확인")||app.usageTip.GetToolTip(app.usage).Contains("진행 포함"))throw new Exception("Failed/offline/unloaded sample retained stale usage");
+   }
+   preview(generating,null);var same=app.serverUsage;decimal usd=same.Cost(price);
+   ApiPricing.Current=new ApiPricing{InputRate=2,OutputRate=10,UsdToKrw=1400};app.UpdateUsageText(app.lastServerInput,app.lastServerOutput);
+   if(!object.ReferenceEquals(same,app.serverUsage)||!app.usage.Text.Contains(ApiPricing.Current.Money(usd)))throw new Exception("FX edit did not reprice the same server sample");
+   ApiPricing.Current=new ApiPricing{InputRate=3,OutputRate=12,UsdToKrw=1400};app.UpdateUsageText(app.lastServerInput,app.lastServerOutput);
+   if(!object.ReferenceEquals(same,app.serverUsage)||!app.usage.Text.Contains(ApiPricing.Current.Money(same.Cost(ApiPricing.Current)))||app.usageLedger.Count!=12)throw new Exception("Rate edit did not reprice the same server sample");
+   ApiPricing.Current=price;app.usageLedger=null;app.ApplyServerUsage(realistic,double.NaN,double.NaN);if(app.usage.Text.Split('\n').Length!=3)throw new Exception("Loading history collapsed the server line");
+   app.usageLedger=new UsageLedger{Error="fixture"};app.UpdateUsageText(double.NaN,double.NaN);if(app.usage.Text.Split('\n').Length!=3)throw new Exception("Failed history collapsed the server line");
+  }finally{
+   ApiPricing.Current=savedPrice;app.usageLedger=savedLedger;app.ApplyServerUsage(savedSnapshot,savedInput,savedOutput);
+   foreach(string file in Directory.GetFiles(directory))File.Delete(file);Directory.Delete(directory);
+  }
+ }
  static void ScriptSettingsTest(QwenStatus app){
   string[] keys={"hermesLaunchScript","externalControllerScript","setupPowerShell","serverOwnership","backend","managedInstallRoot","startQueueWithApp"};
   var prior=keys.Where(Settings.ContainsKey).ToDictionary(key=>key,key=>Settings[key]);
@@ -150,11 +279,12 @@ partial class QwenStatus {
     if(!app.note.Text.Contains(32768.ToString("N0")))throw new Exception("Actual Strata context missing from status");
     app.Show();Application.DoEvents();using(var image=new Bitmap(app.Width,app.Height)){app.DrawToBitmap(image,new Rectangle(Point.Empty,image.Size));image.Save(Path.Combine(DataRoot,"strata-status-"+s+".png"));}
    }
+   ServerUsageTest(app);
    ScriptSettingsTest(app);app.Display(0,double.NaN,double.NaN,double.NaN,0,0);if(app.start.Enabled||app.stop.Enabled||app.startMenu.Enabled||app.stopMenu.Enabled||ExternalControlAvailable())throw new Exception("No-config external lifecycle changed after script fixtures");
    Settings["serverOwnership"]="managed";app.action=true;app.Display(1,double.NaN,double.NaN,double.NaN,0,0);if(app.start.Enabled||app.stop.Enabled)throw new Exception("Actions enabled during loading operation");app.action=false;
    app.quitting=true;app.Close();
   }
   Settings.Remove("backend");Settings.Remove("serverOwnership");Settings.Remove("modelId");
-  File.WriteAllText(Path.Combine(DataRoot,"strata-test.txt"),"PASS: Strata JSON metrics, missing native rates, loadedfalse, endpoint-aware model/gateway readiness, no-config external lifecycle, optional script path/argument/visibility guards, fixed external modes, native ownership, explicit boolean queue-startup/backend/install/offline guards, busy controls and offline state previews (fixture scripts never executed)");
+  File.WriteAllText(Path.Combine(DataRoot,"strata-test.txt"),"PASS: Strata JSON metrics, completed/live server KRW lifecycle, prefill estimate, finalize without double count, epoch reset, invalid counters, offline/unloaded stale clearing, parallel completed-only limits, same-snapshot repricing, unchanged historical ledger, three-line layout and server usage previews; missing native rates, loadedfalse, endpoint-aware model/gateway readiness, no-config external lifecycle, optional script path/argument/visibility guards, fixed external modes, native ownership, explicit boolean queue-startup/backend/install/offline guards, busy controls and offline state previews (fixture scripts never executed)");
  }
 }
