@@ -17,17 +17,19 @@ export function readConfig(env = process.env) {
   if (!path.isAbsolute(appRoot)) throw Error('QWEN_APP_ROOT must be an absolute directory.');
   const port = Number(env.QWEN_QUEUE_PORT || 18022);
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw Error('QWEN_QUEUE_PORT must be 1–65535.');
-  const backend = (env.QWEN_BACKEND || 'vllm').toLowerCase();
-  if (!['vllm', 'ninfer'].includes(backend)) throw Error('QWEN_BACKEND must be vllm or ninfer.');
-  const model = env.QWEN_MODEL_ID || 'qwen3.8-27b';
+  const backend = (env.QWEN_BACKEND || 'strata').toLowerCase();
+  if (backend !== 'strata') throw Error('Only Strata is supported. Prepare an explicit Strata connection in a new installation directory.');
+  const model = env.QWEN_MODEL_ID || '';
   if (!model.trim() || /[\r\n]/.test(model)) throw Error('Invalid QWEN_MODEL_ID.');
   const absolute = (key, fallback) => {
     const value = env[key] || fallback;
     if (value && !path.isAbsolute(value)) throw Error(`${key} must be an absolute path.`);
     return value;
   };
+  const contextTokens=env.QWEN_CONTEXT_TOKENS?Number(env.QWEN_CONTEXT_TOKENS):null;
+  if(contextTokens!==null&&(!Number.isSafeInteger(contextTokens)||contextTokens<=4096))throw Error('Invalid QWEN_CONTEXT_TOKENS.');
   return {
-    appRoot: path.resolve(appRoot), port, model, backend,
+    appRoot: path.resolve(appRoot), port, model, backend, contextTokens,
     backendFile: absolute('QWEN_BACKEND_FILE'),
     upstream: loopbackUrl(env.QWEN_UPSTREAM_URL || 'http://127.0.0.1:18021', 'QWEN_UPSTREAM_URL'),
     queueUrl: loopbackUrl(env.QWEN_QUEUE_URL || `http://127.0.0.1:${port}`, 'QWEN_QUEUE_URL'),
@@ -49,7 +51,7 @@ export async function readBackend(config) {
   try{
     const buffer=Buffer.alloc(65),{bytesRead}=await file.read(buffer,0,65,0);
     const backend=buffer.subarray(0,bytesRead).toString('utf8').trim().toLowerCase();
-    if(bytesRead>64||!['vllm','ninfer'].includes(backend))throw Error('QWEN_BACKEND_FILE must contain only vllm or ninfer (up to 64 bytes).');
+    if(bytesRead>64||backend!=='strata')throw Error('QWEN_BACKEND_FILE must contain only strata (up to 64 bytes). Legacy installations are not migrated automatically.');
     return backend;
   }finally{await file.close();}
 }

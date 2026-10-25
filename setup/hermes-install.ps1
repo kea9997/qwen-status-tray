@@ -12,6 +12,7 @@ No existing Hermes installation is discovered, imported, repaired, or started.
 param(
     [ValidateSet('Plan', 'Install', 'Verify')][string]$Action = 'Plan',
     [Parameter(Mandatory = $true)][string]$InstallRoot,
+    [string]$ModelId,
     [switch]$CheckEndpoint
 )
 
@@ -22,7 +23,7 @@ $hermesCommit = '62ac203abe6373a3e54cb78a851326b099a88f14'
 $uvVersion = '0.12.18'
 $gitVersion = '2.55.0.5'
 $queueUrl = 'http://127.0.0.1:18022/v1'
-$modelName = 'qwen3.8-27b'
+$modelName = $ModelId
 $utf8 = New-Object System.Text.UTF8Encoding($false)
 
 function Get-AbsoluteRoot([string]$Value) {
@@ -64,6 +65,16 @@ $pythonExe = if ($runningWindows) { Join-Path $venvRoot 'Scripts\python.exe' } e
 $bashExe = if ($runningWindows) { Join-Path $gitRoot 'bin\bash.exe' } else { '/bin/bash' }
 $resultPath = Join-Path $managedRoot 'install-result.json'
 $logPath = Join-Path $managedRoot 'install.log'
+$connectionPath = Join-Path $installBase 'setup-state.json'
+if (-not $modelName -and (Test-Path -LiteralPath $connectionPath)) {
+    $connection = (Get-Content -LiteralPath $connectionPath -Raw | ConvertFrom-Json).connection
+    if ($connection -and $connection.backend -eq 'strata') { $modelName = $connection.model }
+}
+if (-not $modelName -and $Action -eq 'Verify' -and (Test-Path -LiteralPath $resultPath)) {
+    $modelName = (Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json).model
+}
+if ($modelName -and $modelName -notmatch '^[a-zA-Z0-9][a-zA-Z0-9._/-]*$') { throw 'ModelId must be a verified model identifier without whitespace or config syntax.' }
+if ($Action -eq 'Install' -and -not $modelName) { throw 'Prepare a Strata connection first, or explicitly supply its verified -ModelId. No default model is substituted.' }
 $environmentContract = [ordered]@{
     QWEN_HERMES_PYTHON = $pythonExe
     QWEN_HERMES_ROOT = $sourceRoot
@@ -296,7 +307,7 @@ try {
     $configText = @'
 model:
   provider: custom
-  default: qwen3.8-27b
+  default: __STRATA_MODEL_ID__
   base_url: http://127.0.0.1:18022/v1
   api_key: local-qwen-no-secret
   api_mode: chat_completions
@@ -313,13 +324,14 @@ auxiliary:
     $configText += "`n" + @'
 delegation:
   provider: custom
-  model: qwen3.8-27b
+  model: __STRATA_MODEL_ID__
   base_url: http://127.0.0.1:18022/v1
   api_key: local-qwen-no-secret
   api_mode: chat_completions
 terminal:
   backend: local
 '@
+    $configText = $configText.Replace('__STRATA_MODEL_ID__', $modelName)
     [IO.File]::WriteAllText((Join-Path $hermesHome 'config.yaml'), $configText + "`n", $utf8)
     [IO.File]::WriteAllText((Join-Path $hermesHome '.env'), "# Local queue placeholder; this is not a secret.`nOPENAI_BASE_URL=$queueUrl`nOPENAI_API_KEY=local-qwen-no-secret`nHERMES_MODEL=$modelName`n", $utf8)
     $state.status = 'installed'

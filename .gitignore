@@ -27,6 +27,7 @@ setup-logs/
 setup-state.json
 setup.lock
 gateway-process.json
+/strata/
 runtime/**/conversations/
 runtime/**/agent-sessions/
 *.tmp

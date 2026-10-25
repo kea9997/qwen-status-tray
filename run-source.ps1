@@ -6,6 +6,11 @@ $dataRoot = Join-Path $env:LOCALAPPDATA 'QwenStatus'
 
 try {
     [AppDomain]::CurrentDomain.SetData('QwenStatusRoot', $sourceRoot)
+    if (@($AppArguments | Where-Object { $_ -in @('--core-test','--insights-test','--operations-test','--experience-test','--chat-test','--delegation-test','--install-test','--strata-test','--status-test','--self-test','--usage-test','--token-test-ui','--insights-ui-test') }).Count) {
+        [AppDomain]::CurrentDomain.SetData('QwenStatusOfflineTest','1')
+        if (-not $env:QWEN_SELF_TEST_DIR -or -not [IO.Path]::IsPathRooted($env:QWEN_SELF_TEST_DIR)) { throw 'Offline tests require absolute QWEN_SELF_TEST_DIR.' }
+        $dataRoot=$env:QWEN_SELF_TEST_DIR
+    }
     $types = Add-Type -Path @(
         (Join-Path $sourceRoot 'QwenStatus.cs'),
         (Join-Path $sourceRoot 'TokenTestWindow.cs'),
@@ -15,7 +20,8 @@ try {
         (Join-Path $sourceRoot 'QwenExperience.cs'),
         (Join-Path $sourceRoot 'QwenChatWindow.cs'),
         (Join-Path $sourceRoot 'QwenDelegation.cs'),
-        (Join-Path $sourceRoot 'QwenInstallWindow.cs')
+        (Join-Path $sourceRoot 'QwenInstallWindow.cs'),
+        (Join-Path $sourceRoot 'QwenStrata.cs')
     ) -ReferencedAssemblies @(
         'System.Windows.Forms', 'System.Drawing', 'System.Web.Extensions'
     ) -PassThru -WarningAction SilentlyContinue

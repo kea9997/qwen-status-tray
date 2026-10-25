@@ -14,12 +14,12 @@ const wait=ms=>new Promise(r=>setTimeout(r,ms));
 async function eventually(fn,label){for(let i=0;i<250;i++){const result=await fn();if(result)return result;await wait(20);}throw Error('Timed out: '+label);}
 const appRoot=await fs.mkdtemp(path.join(os.tmpdir(),'qwen-portable-test-'));
 const root=path.join(appRoot,'runtime','gateway');
-let active=0,peak=0,online=true;
+let active=0,peak=0,online=true,loaded=true,servedModel='fixture-model';
 const payloads=[],children=[],release=new Map();
 const backend=http.createServer(async(req,res)=>{
- if(req.url==='/health'){res.writeHead(online?200:503);return res.end();}
- if(req.url==='/v1/models')return res.end(JSON.stringify({data:[{id:'fixture-model'}]}));
- if(req.url==='/metrics')return res.end('fixture_requests_total 1\n');
+ if(req.url==='/health'){res.writeHead(online?200:503);return res.end(JSON.stringify({service:'strata',loaded:online&&loaded,model:servedModel,max_context:65536}));}
+ if(req.url==='/v1/models')return res.end(JSON.stringify({data:[{id:'fixture-model',meta:{n_ctx:65536}}]}));
+ if(req.url==='/metrics')return res.end(JSON.stringify({engine:{model:'fixture-model',max_context:65536},live:{state:'idle',queued:0},totals:{prompt_tokens:12,output_tokens:7}}));
  let raw='';for await(const b of req)raw+=b;const data=JSON.parse(raw);
  if(req.url==='/tokenize')return res.end(JSON.stringify({count:100}));
  assert.equal(req.url,'/v1/chat/completions');payloads.push(data);active++;peak=Math.max(peak,active);
@@ -38,7 +38,7 @@ const backend=http.createServer(async(req,res)=>{
 await new Promise(resolve=>backend.listen(0,'127.0.0.1',resolve));
 const upstream='http://127.0.0.1:'+backend.address().port;
 // All configured URLs and data directories are fixtures, including those inherited by child jobs.
-const env={...process.env,QWEN_APP_ROOT:appRoot,QWEN_GATEWAY_DATA_DIR:root,QWEN_WORKER_DATA_DIR:path.join(appRoot,'runtime','worker'),QWEN_BACKEND:'vllm',QWEN_BACKEND_FILE:'',QWEN_MODEL_ID:'fixture-model',QWEN_UPSTREAM_URL:upstream,QWEN_HERMES_PYTHON:'',QWEN_HERMES_ROOT:'',QWEN_HERMES_HOME:'',QWEN_HERMES_GIT_BASH:'',QWEN_VISION_READY:'0'};
+const env={...process.env,QWEN_APP_ROOT:appRoot,QWEN_GATEWAY_DATA_DIR:root,QWEN_WORKER_DATA_DIR:path.join(appRoot,'runtime','worker'),QWEN_BACKEND:'strata',QWEN_BACKEND_FILE:'',QWEN_CONTEXT_TOKENS:'65536',QWEN_MODEL_ID:'fixture-model',QWEN_UPSTREAM_URL:upstream,QWEN_HERMES_PYTHON:'',QWEN_HERMES_ROOT:'',QWEN_HERMES_HOME:'',QWEN_HERMES_GIT_BASH:'',QWEN_VISION_READY:'0'};
 for(const key of Object.keys(env).filter(k=>k.startsWith('QWEN_')))process.env[key]=env[key];
 const queue=await createGateway({port:0,root,upstream});
 const base='http://127.0.0.1:'+queue.address().port;env.QWEN_QUEUE_URL=base;
@@ -106,9 +106,24 @@ try {
  const workerPayload=payloads.find(p=>p.messages.at(-1).content.includes('Summarize the fixture only.'));
  assert(workerPayload.messages.at(-1).content.includes('2: fixture line two'));assert(!workerPayload.messages.at(-1).content.includes('ignore line'));
  await idle();online=false;
- assert.equal((await call('qwen_submit',{task:'offline'})).status,'unavailable');assert.equal((await send('offline')).status,503);online=true;worker.stdin.end();
+ assert.equal((await call('qwen_submit',{task:'offline'})).status,'unavailable');assert.equal((await send('offline')).status,503);
+ const unavailable=async()=>{
+  const before=payloads.length;
+  assert.equal((await api('/health')).status,503);
+  assert.equal((await send('unavailable')).status,503);
+  assert.equal((await api('/ui/jobs',{method:'POST',body:JSON.stringify({mode:'chat',prompt:'unavailable',session:'offline'})})).status,503);
+  assert.equal((await api('/v1/chat/completions',{method:'POST',body:'{'})).status,400);
+  assert.equal((await api('/v1/chat/completions',{method:'POST',body:'{}'})).status,400);
+  assert.equal((await api('/ui/jobs',{method:'POST',body:'{}'})).status,400);
+  assert.equal((await fetch(base+'/ui/jobs',{method:'POST',body:'{}'})).status,403);
+  assert.equal(payloads.length,before);
+ };
+ await unavailable();online=true;loaded=false;await unavailable();loaded=true;
+ servedModel='wrong-model';await unavailable();servedModel='fixture-model';worker.stdin.end();
  await benchmark();await idle();await benchmark(true);await idle();
- console.log('PASS: portable config; FIFO concurrency=1; UI auth; two-turn context; usage metrics; queued/active cancellation; optional Hermes; worker result/offline fallback; benchmark quick/cancel with fake backend only');
+ backend.closeAllConnections();await new Promise(resolve=>backend.close(resolve));
+ await unavailable();
+ console.log('PASS: portable config; FIFO concurrency=1; UI auth; two-turn context; usage metrics; queued/active cancellation; optional Hermes; worker result/offline fallback; HTTP503/unloaded/wrong-model/connection-unavailable with 400/403 preserved; benchmark quick/cancel with fake backend only');
 } finally {
  for(const unblock of release.values())unblock();
  for(const child of children)if(child.exitCode===null)child.kill();

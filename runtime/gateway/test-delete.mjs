@@ -6,10 +6,11 @@ import path from 'node:path';
 import {createGateway} from './gateway.mjs';
 import {ConversationStore} from './conversation-store.mjs';
 import {AgentSessions} from './agent-sessions.mjs';
-delete process.env.QWEN_BACKEND_FILE;process.env.QWEN_BACKEND='vllm';
+delete process.env.QWEN_BACKEND_FILE;delete process.env.QWEN_CONTEXT_TOKENS;process.env.QWEN_BACKEND='strata';process.env.QWEN_MODEL_ID='fixture-delete';
 let online=true;
 const backend=http.createServer(async(req,res)=>{
- if(req.url==='/health'){res.writeHead(online?200:503);return res.end();}
+ if(req.url==='/health'){res.writeHead(online?200:503);return res.end(JSON.stringify({service:'strata',loaded:online,model:'fixture-delete',max_context:32768}));}
+ if(req.url==='/v1/models')return res.end(JSON.stringify({data:[{id:'fixture-delete',meta:{n_ctx:32768}}]}));
  for await(const b of req){}
  res.setHeader('content-type','application/json');
  if(req.url==='/tokenize')return res.end(JSON.stringify({count:10}));
